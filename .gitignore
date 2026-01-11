@@ -4,10 +4,14 @@
 **/secrets/
 **/backups/
 
-# directory level
-proxy/letsencrypt/
-proxy/webroot/
-
 # passwords
 *.htpasswd
 
+# Proxy
+proxy/letsencrypt/
+proxy/webroot/
+
+# Postgres
+apps/postgres/data
+apps/postgres/secrets
+apps/postgres/pgadmin-data
