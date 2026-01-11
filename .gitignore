@@ -9,6 +9,7 @@
 
 # Proxy
 proxy/letsencrypt/
+proxy/letsencrypt-logs/
 proxy/webroot/
 
 # Postgres
