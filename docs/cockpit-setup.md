@@ -297,6 +297,158 @@ nginx -t
 nginx -s reload
 ```
 
+### 11.1 Why a Heartbeat Endpoint Is Required
+
+Because the admin site is protected by **HTTP Basic Auth**, any third-party uptime monitoring service (e.g. StatusCake, UptimeRobot) would otherwise see:
+
+* `401 Unauthorized`
+* `403 Forbidden`
+
+…and incorrectly report the server as **down**.
+
+Additionally:
+
+* Self-hosted tools (Netdata, Cockpit) **cannot alert if the server is offline**
+* Crash detection **must be performed externally**
+
+**Correct solution**: expose a tiny, unauthenticated endpoint whose sole purpose is to answer:
+
+> “Is this server reachable over HTTPS right now?”
+
+This endpoint is called **`/heartbeat`**.
+
+---
+
+### 11.2 Heartbeat Design Principles
+
+The `/heartbeat` endpoint is intentionally minimal:
+
+* No authentication
+* No backend dependency
+* No application logic
+* No sensitive data
+* Static response
+
+If Nginx can respond, the server is considered **up**.
+
+This avoids:
+
+* Credential sharing with third-party services
+* False positives caused by auth
+* Tight coupling to Cockpit availability
+
+---
+
+### 11.3 Heartbeat Implementation (Nginx)
+
+The heartbeat endpoint is implemented **inside the same HTTPS virtual host**, using the existing TLS certificate for `admin.marin.cr`.
+
+No additional certificates or domains are required.
+
+```nginx
+location = /heartbeat {
+    auth_basic off;
+    access_log off;
+    add_header Content-Type text/plain;
+    add_header Cache-Control "no-store";
+    return 200 "OK\n";
+}
+```
+
+Key details:
+
+* `auth_basic off` overrides the server-level Basic Auth
+* The endpoint is still served **over HTTPS**
+* The response is constant and predictable
+* The endpoint does not proxy to Cockpit or any backend
+
+---
+
+### 11.4 Optional HTTP Heartbeat (ACME + Debugging)
+
+An identical `/heartbeat` endpoint is also exposed on port 80:
+
+```nginx
+location = /heartbeat {
+    access_log off;
+    add_header Content-Type text/plain;
+    return 200 "OK\n";
+}
+```
+
+This is optional but useful for:
+
+* Debugging DNS / routing issues
+* Verifying reachability without TLS
+* Simplifying early monitoring setup
+
+If HTTPS-only monitoring is preferred, this block can be removed.
+
+---
+
+### 11.5 How This Is Used in Practice
+
+External monitoring services are configured to check:
+
+```
+https://admin.marin.cr/heartbeat
+```
+
+Expected result:
+
+* HTTP status: `200`
+* Body contains: `OK`
+
+If this check fails, the server is considered **unreachable or crashed**, and alerts are triggered.
+
+This cleanly separates concerns:
+
+| Concern                   | Tool                              |
+| ------------------------- | --------------------------------- |
+| Is the server alive?      | External monitor via `/heartbeat` |
+| Is the server healthy?    | Netdata                           |
+| What is broken right now? | Cockpit                           |
+
+---
+
+### 11.6 Validation
+
+```bash
+curl -i https://admin.marin.cr/heartbeat
+```
+
+Expected:
+
+```
+HTTP/2 200
+OK
+```
+
+Verify that the admin UI still requires authentication:
+
+```bash
+curl -i https://admin.marin.cr/
+```
+
+Expected:
+
+```
+401 Unauthorized
+```
+
+---
+
+### 11.7 Security Considerations
+
+The `/heartbeat` endpoint:
+
+* Reveals no system information
+* Exposes no credentials
+* Performs no computation
+* Is standard practice in production systems
+
+This is a **safe and intentional exception** to Basic Auth, and is required for reliable external monitoring.
+
 ---
 
 ## 12. Validation Checklist (Critical)
