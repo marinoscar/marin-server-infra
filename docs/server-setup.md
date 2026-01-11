@@ -2,6 +2,24 @@
 
 ## Purpose
 
+### Prerequisites
+
+Before following or reusing this setup, the following prerequisites are assumed:
+
+* An Ubuntu VPS with root SSH access
+* A registered domain (e.g. `marin.cr`)
+* DNS A records created for intended subdomains (e.g. `pgadmin.marin.cr` → VPS public IP)
+* SSH key-based access to GitHub configured for this server
+* Basic familiarity with Linux shell and Docker concepts
+
+This document captures the current architecture and the exact setup steps completed so far for a self-hosted Ubuntu VPS platform using:
+
+* **Root** as the operating user (intentionally)
+* **Docker + Docker Compose** to run services
+* A shared **reverse proxy** layer (Nginx) to front all apps
+* **Git + GitHub** to version infrastructure configuration
+
+The setup is designed to scale to multiple self-hosted applications with consistent patterns, minimal public exposure, and repeatable upgrades.
 This document captures the current architecture and the exact setup steps completed so far for a self-hosted Ubuntu VPS platform using:
 
 * **Root** as the operating user (intentionally)
@@ -239,6 +257,16 @@ docker compose version
 
 ### 5) Create shared Docker network for proxy routing
 
+A dedicated Docker network named `proxy` is used as a shared internal network between the reverse proxy and all application containers.
+
+**Why this matters:**
+
+* Allows Nginx to route to containers by service name (DNS-based) instead of hardcoded IPs
+* Prevents applications from needing public port mappings
+* Enables clean separation between public ingress (Nginx) and internal services
+
+Checked networks and created the shared `proxy` network:
+
 Checked networks and created the shared `proxy` network:
 
 ```bash
@@ -252,6 +280,16 @@ docker network ls
 ---
 
 ### 6) Configure Nginx reverse proxy (HTTP-only baseline)
+
+At this stage, Nginx is intentionally configured in **HTTP-only mode** with a simple placeholder response.
+
+**Purpose of this baseline:**
+
+* Verify DNS, firewall, and container networking are correct
+* Establish the reverse proxy pattern early
+* Prepare the filesystem layout required for future Let’s Encrypt (ACME) challenges
+
+No applications are proxied yet; HTTPS and `proxy_pass` directives will be added in later phases.
 
 Created proxy directory structure:
 
@@ -365,6 +403,10 @@ git status
 ## Current operational commands
 
 ### Proxy lifecycle
+
+The reverse proxy is operated and debugged entirely via Docker. Logs, reloads, and validation are all performed against the running container.
+
+Common commands:
 
 ```bash
 cd /opt/infra/proxy
