@@ -3,19 +3,9 @@ services:
     image: nginx:1.27-alpine
     container_name: proxy-nginx
     restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "80:80"
-      - "443:443"
+    network_mode: "host"
     volumes:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./nginx/snippets:/etc/nginx/snippets:ro
       - ./letsencrypt:/etc/letsencrypt
       - ./webroot:/var/www/certbot
-    networks:
-      - proxy
-
-networks:
-  proxy:
-    external: true
