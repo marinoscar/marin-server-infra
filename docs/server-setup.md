@@ -54,6 +54,72 @@ The setup is designed to scale to multiple self-hosted applications with consist
 
 ## Strategy
 
+## Operator & Automation Preferences (Important)
+
+This section documents **explicit operator preferences**. These are intentional and should be respected by humans **and by any AI agents** operating on this repository or server.
+
+### Editing & Interaction Preferences
+
+* **Editor:** `nano`
+
+  * All instructions, scripts, and runbooks should assume `nano` as the editor.
+  * Do **not** suggest `vim`, `vi`, or other editors unless explicitly requested.
+
+* **Command style:**
+
+  * Prefer **explicit, readable commands** over shortcuts or abstractions.
+  * Avoid shell tricks, aliases, or advanced Bash features unless clearly justified.
+
+* **Step-by-step execution:**
+
+  * Changes should be broken into **small, verifiable steps**.
+  * After each step, include a simple verification command where applicable.
+
+### Git & Version Control Preferences
+
+* **Git-first mindset:**
+
+  * Infrastructure changes should be committed at clear milestones.
+  * Commits should be small, descriptive, and represent stable checkpoints.
+
+* **No secrets in Git (non-negotiable):**
+
+  * Never commit credentials, tokens, certificates, or private keys.
+  * Use `.env` files and ignored directories for secrets and runtime data.
+
+* **Main branch workflow:**
+
+  * The `main` branch represents the deployed state of the server.
+  * Avoid experimental or partially working commits on `main`.
+
+### Operating Model
+
+* **Root user is intentional:**
+
+  * This server is operated directly as `root`.
+  * Instructions should not assume `sudo` or non-root users unless explicitly stated.
+
+* **Clarity over cleverness:**
+
+  * Prefer explicit configuration over dynamic variables or templating.
+  * Avoid indirection (e.g., shell variables) unless it improves clarity.
+
+* **Deterministic behavior:**
+
+  * Commands should produce predictable results.
+  * Avoid automation that obscures state or makes debugging harder.
+
+### AI Agent Guidance
+
+When this repository or documentation is used as input to AI agents:
+
+* Assume the operator values **control, transparency, and understanding** over speed.
+* Do not introduce tools, frameworks, or patterns that were not explicitly requested.
+* Favor explanations alongside actions.
+* Treat this document as the **source of truth** for how changes should be proposed and applied.
+
+---
+
 ### 1) “One app = one folder = one Compose file”
 
 Each app will live under `/opt/infra/apps/<appname>` with:
@@ -425,6 +491,24 @@ docker exec proxy-nginx nginx -s reload
 ss -tulnp | egrep ':80|:443'
 ufw status verbose
 ```
+
+---
+
+## Next steps (planned)
+
+### Phase 3 completion (when ready)
+
+To fully complete Phase 3, add:
+
+* Certificate issuance with **certbot** (webroot method)
+* HTTPS server blocks in Nginx per hostname
+* Auto-renewal via cron and an Nginx reload hook
+
+### Phase 4 — Applications
+
+* Add first app stack under `/opt/infra/apps/<appname>`
+* Attach app container(s) to the shared `proxy` network
+* Add per-host Nginx config to route `https://<app>.marin.cr` to the app
 
 ---
 
