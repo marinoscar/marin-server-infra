@@ -2,3 +2,6 @@
 **/data/
 **/secrets/
 **/backups/
+proxy/letsencrypt/
+proxy/webroot/
+
