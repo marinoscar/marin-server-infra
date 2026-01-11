@@ -7,6 +7,9 @@
 # passwords
 *.htpasswd
 
+# Shared
+shared/renew-all-certs.log
+
 # Proxy
 proxy/letsencrypt/
 proxy/letsencrypt-logs/
