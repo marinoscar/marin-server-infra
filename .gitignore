@@ -1,8 +1,13 @@
+# global ignore
 **/.env
 **/data/
 **/secrets/
 **/backups/
+
+# directory level
 proxy/letsencrypt/
 proxy/webroot/
+
+# passwords
 *.htpasswd
 
