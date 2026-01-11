@@ -368,28 +368,184 @@ Expected: `401 Unauthorized`
 
 ---
 
-## 13. Lessons Learned (Read This Before Repeating)
+Perfect — here is a **clean, production-ready addition** you can drop straight into your article.
+I’ve written it to match the tone, rigor, and *actual steps that worked* for **Ubuntu 24.04 (noble)**, and to explicitly document the pitfalls you hit so you (or future-you) don’t repeat them.
 
-1. **Do NOT fight Docker-to-host routing on VPSes**
-
-   * If containers hang connecting to docker0, switch to host network
-
-2. **Cockpit redirects HTTP → HTTPS internally**
-
-   * Proxying via docker0 + TLS causes hangs
-   * Localhost HTTP avoids this entirely
-
-3. **Auth files must exist before container start**
-
-   * Otherwise mounts appear empty
-
-4. **Use Basic Auth + Cockpit auth (defense in depth)**
-
-5. **Bind Cockpit to localhost only**
-
-   * Nginx is the only ingress
+I recommend inserting this **after Section 12 (Validation Checklist)** and **before Lessons Learned**, because it’s an *optional but powerful enhancement* to Cockpit.
 
 ---
+
+## 13. Enable File System Access in Cockpit (Navigator)
+
+By default, Cockpit does **not** include a file system browser UI.
+For secure, browser-based access to the server filesystem (without SSH, SFTP, or additional ports), we install **Cockpit Navigator**.
+
+This integrates directly into Cockpit, respects Linux permissions, and works cleanly behind our existing Nginx reverse proxy.
+
+---
+
+### 13.1 Why Cockpit Navigator
+
+Cockpit Navigator provides:
+
+* Web-based file browsing
+* Upload / download files
+* Create, rename, delete files and folders
+* Edit text files
+* View and change permissions and ownership
+
+All actions are:
+
+* Authenticated via Cockpit (Linux users)
+* Protected by sudo elevation (“Turn on administrative access”)
+* Exposed **only** through the existing Cockpit UI
+
+No new services, ports, or containers are introduced.
+
+---
+
+### 13.2 Important Notes (Read First)
+
+* Ubuntu **24.04 (noble)** is **not supported** by the official 45Drives APT repository at this time
+* Attempting to use the repo setup script will:
+
+  * Fail
+  * Break APT with a malformed sources file
+* GitHub “latest” release URLs **do not contain `.deb` assets**
+
+**Correct approach**: install the last known working `.deb` directly.
+
+---
+
+### 13.3 Install Cockpit Navigator (Ubuntu 24.04 – Tested)
+
+Download the pinned release that is known to work:
+
+```bash
+cd /tmp
+wget https://github.com/45Drives/cockpit-navigator/releases/download/v0.5.10/cockpit-navigator_0.5.10-1focal_all.deb
+```
+
+Install it:
+
+```bash
+apt install ./cockpit-navigator_0.5.10-1focal_all.deb
+```
+
+This may also install small dependencies (`zip`, `unzip`), which is expected.
+
+---
+
+### 13.4 Restart Cockpit (Important)
+
+Restart **only** the Cockpit socket (do not expose new listeners):
+
+```bash
+systemctl daemon-reexec
+systemctl daemon-reload
+systemctl stop cockpit.service
+systemctl restart cockpit.socket
+```
+
+Verify Cockpit is still bound **only** to localhost:
+
+```bash
+ss -tulnp | grep 9090
+```
+
+Expected:
+
+```
+127.0.0.1:9090
+```
+
+There must be **no** `0.0.0.0` or `172.17.0.1` listeners.
+
+---
+
+### 13.5 Access Navigator in the Browser
+
+1. Open [https://admin.marin.cr](https://admin.marin.cr)
+2. Authenticate via HTTP Basic Auth
+3. Log into Cockpit
+4. (Optional) Click **“Turn on administrative access”**
+5. Select **Navigator** from the left sidebar
+
+You can also access it directly:
+
+```
+https://admin.marin.cr/navigator/
+```
+
+---
+
+### 13.6 Security Model (Why This Is Safe)
+
+Navigator inherits all existing security layers:
+
+* TLS enforced at Nginx
+* HTTP Basic Auth at Nginx
+* Linux user authentication in Cockpit
+* Optional sudo elevation per session
+* Cockpit bound to localhost only
+
+No additional ingress paths are created.
+
+---
+
+### 13.7 Validation Checklist
+
+```bash
+ls -la /usr/share/cockpit/navigator
+```
+
+Expected: files present.
+
+In the UI:
+
+* Navigator appears in sidebar
+* Root filesystem (`/`) is visible
+* “Limited access” badge disappears after sudo elevation
+* File operations work as expected
+
+---
+
+### 13.8 Known Pitfalls (Lessons Learned)
+
+* ❌ Do not use `repo.45drives.com/setup` on Ubuntu 24.04
+* ❌ Do not use wildcard GitHub URLs (`*_all.deb`)
+* ❌ Do not restart `cockpit.service` without verifying socket bindings
+* ✅ Use a pinned `.deb`
+* ✅ Keep Cockpit bound to `127.0.0.1`
+
+---
+
+## (Renumber existing sections)
+
+Your current **Lessons Learned** becomes **Section 14**, and **Current State Summary** becomes **Section 15**.
+
+---
+
+## Why this addition matters
+
+This turns Cockpit into a **complete secure admin plane**:
+
+* Systemd
+* Logs
+* Networking
+* Storage
+* **Filesystem**
+
+—all without SSH exposure or extra services.
+
+If you want, next I can:
+
+* Merge this directly into a full revised markdown
+* Add a “Known Gotchas” appendix
+* Or create a short TL;DR diagram showing Cockpit + Navigator flow
+
+Just say the word.
+
 
 ## 14. Current State Summary
 
