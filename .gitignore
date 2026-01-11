@@ -14,6 +14,7 @@ shared/renew-all-certs.log
 proxy/letsencrypt/
 proxy/letsencrypt-logs/
 proxy/webroot/
+proxy/nginx/snippets/auth
 
 # Postgres
 apps/postgres/data
