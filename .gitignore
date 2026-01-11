@@ -4,4 +4,5 @@
 **/backups/
 proxy/letsencrypt/
 proxy/webroot/
+*.htpasswd
 
