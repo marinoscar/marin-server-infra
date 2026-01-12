@@ -22,4 +22,4 @@ apps/postgres/secrets
 apps/postgres/pgadmin-data
 
 # MarinAPP
-apps/src
+apps/marinapp/src
