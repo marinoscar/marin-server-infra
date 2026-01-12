@@ -20,3 +20,6 @@ proxy/nginx/snippets/auth
 apps/postgres/data
 apps/postgres/secrets
 apps/postgres/pgadmin-data
+
+# MarinAPP
+apps/src
