@@ -73,3 +73,79 @@ Additionally, the following renewal configurations were invalid:
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 0 renew failure(s), 1 parse failure(s)
 Ask for help or search for solutions at https://community.letsencrypt.org. See the logfile /var/log/letsencrypt/letsencrypt.log or re-run Certbot with -v for more details.
+===== 2026-01-11T07:54:26+01:00 Starting renew-all =====
+Fixed renewal config: /opt/infra/proxy/letsencrypt/renewal/admin.marin.cr.conf
+  Backup: /opt/infra/proxy/letsencrypt/renewal-backups/admin.marin.cr.conf.2026-01-11T07:54:26+01:00.bak
+Fixed renewal config: /opt/infra/proxy/letsencrypt/renewal/pgadmin.marin.cr.conf
+  Backup: /opt/infra/proxy/letsencrypt/renewal-backups/pgadmin.marin.cr.conf.2026-01-11T07:54:26+01:00.bak
+Saving debug log to /var/log/letsencrypt/letsencrypt.log
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Processing /etc/letsencrypt/renewal/admin.marin.cr.conf
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Certificate not yet due for renewal
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Processing /etc/letsencrypt/renewal/pgadmin.marin.cr.conf
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Certificate not yet due for renewal
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+The following certificates are not due for renewal yet:
+  /etc/letsencrypt/live/admin.marin.cr/fullchain.pem expires on 2026-04-11 (skipped)
+  /etc/letsencrypt/live/pgadmin.marin.cr/fullchain.pem expires on 2026-04-11 (skipped)
+No renewals were attempted.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+2026/01/11 06:54:29 [notice] 34#34: signal process started
+===== 2026-01-11T07:54:29+01:00 Finished renew-all =====
+
+===== 2026-01-11T07:54:49+01:00 Starting renew-all =====
+Saving debug log to /var/log/letsencrypt/letsencrypt.log
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Processing /etc/letsencrypt/renewal/admin.marin.cr.conf
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Certificate not yet due for renewal
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Processing /etc/letsencrypt/renewal/pgadmin.marin.cr.conf
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Certificate not yet due for renewal
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+The following certificates are not due for renewal yet:
+  /etc/letsencrypt/live/admin.marin.cr/fullchain.pem expires on 2026-04-11 (skipped)
+  /etc/letsencrypt/live/pgadmin.marin.cr/fullchain.pem expires on 2026-04-11 (skipped)
+No renewals were attempted.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+2026/01/11 06:54:52 [notice] 53#53: signal process started
+===== 2026-01-11T07:54:52+01:00 Finished renew-all =====
+
+===== 2026-01-11T07:55:44+01:00 Starting renew-all =====
+Saving debug log to /var/log/letsencrypt/letsencrypt.log
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Processing /etc/letsencrypt/renewal/admin.marin.cr.conf
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Certificate not yet due for renewal
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Processing /etc/letsencrypt/renewal/pgadmin.marin.cr.conf
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Certificate not yet due for renewal
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+The following certificates are not due for renewal yet:
+  /etc/letsencrypt/live/admin.marin.cr/fullchain.pem expires on 2026-04-11 (skipped)
+  /etc/letsencrypt/live/pgadmin.marin.cr/fullchain.pem expires on 2026-04-11 (skipped)
+No renewals were attempted.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+2026/01/11 06:55:48 [notice] 73#73: signal process started
+===== 2026-01-11T07:55:48+01:00 Finished renew-all =====
+

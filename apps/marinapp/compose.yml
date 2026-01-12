@@ -1,0 +1,32 @@
+services:
+  api:
+    build:
+      context: /opt/infra/apps/marinapp/src
+      dockerfile: apps/api/Dockerfile
+    container_name: marinapp-api
+    env_file:
+      - .env
+    networks:
+      - proxy
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5000:5000"
+
+  web:
+    build:
+      context: /opt/infra/apps/marinapp/src/apps/web
+      dockerfile: Dockerfile
+    container_name: marinapp-web
+    env_file:
+      - .env
+    networks:
+      - proxy
+    depends_on:
+      - api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3021:3021"
+
+networks:
+  proxy:
+    external: true
