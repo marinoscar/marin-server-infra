@@ -13,6 +13,13 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
+      S3_BUCKET: ${S3_BUCKET}
+      S3_KEY: ${S3_KEY}
+      S3_SECRET: ${S3_SECRET}
+      S3_REGION: ${S3_REGION}
+      S3_HOST: ${S3_HOST}
+      S3_USE_SSL: ${S3_USE_SSL}
+
       REDIS_HOST: ${REDIS_HOST}
 
     volumes:
