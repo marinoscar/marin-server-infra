@@ -19,6 +19,8 @@ WEB_CFG_JS_DEST="${WEB_PUBLIC_DIR}/config.js"
 API_SRC_DIR="${SRC_DIR}/apps/api/src"
 API_CFG_JSON_DEST="${API_SRC_DIR}/config.json"
 
+BACKUP_ZIP="${ROOT_DIR}/backup.zip"
+
 log() { echo "[install-marinapp] $*"; }
 run() { log "RUN: $*"; "$@"; }
 
@@ -33,6 +35,7 @@ log "=== MarinApp install starting ==="
 
 # --- Dependencies ---
 need_cmd unzip
+need_cmd zip
 need_cmd docker
 need_cmd find
 need_cmd head
@@ -54,6 +57,17 @@ fi
 
 # --- Ensure root dir exists ---
 run mkdir -p "$ROOT_DIR"
+
+# --- BACKUP EXISTING SRC (overwrite backup.zip) ---
+log "Backing up existing src folder (if present) to: $BACKUP_ZIP"
+run rm -f "$BACKUP_ZIP"
+if [ -d "$SRC_DIR" ]; then
+  # Create the zip at ROOT_DIR, containing src/ (quiet recursion)
+  run bash -lc "cd '$ROOT_DIR' && zip -rq 'backup.zip' 'src'"
+  log "Backup complete: $BACKUP_ZIP"
+else
+  log "WARNING: $SRC_DIR does not exist; skipping backup."
+fi
 
 # --- Temp workspace ---
 TMP_DIR="$(mktemp -d -p "$ROOT_DIR" .install-tmp.XXXXXX)"
