@@ -23,3 +23,11 @@ apps/postgres/pgadmin-data
 
 # MarinAPP
 apps/marinapp/src
+apps/marinapp/**/config.json
+apps/marinapp/**/config.js
+apps/marinapp/web.config.json
+apps/marinapp/web.config.js
+apps/marinapp/api.config.json
+
+# NextCloud
+
