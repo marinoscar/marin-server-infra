@@ -20,14 +20,6 @@ This document captures the current architecture and the exact setup steps comple
 * **Git + GitHub** to version infrastructure configuration
 
 The setup is designed to scale to multiple self-hosted applications with consistent patterns, minimal public exposure, and repeatable upgrades.
-This document captures the current architecture and the exact setup steps completed so far for a self-hosted Ubuntu VPS platform using:
-
-* **Root** as the operating user (intentionally)
-* **Docker + Docker Compose** to run services
-* A shared **reverse proxy** layer (Nginx) to front all apps
-* **Git + GitHub** to version infrastructure configuration
-
-The setup is designed to scale to multiple self-hosted applications with consistent patterns, minimal public exposure, and repeatable upgrades.
 
 ---
 
@@ -44,11 +36,25 @@ The setup is designed to scale to multiple self-hosted applications with consist
 ### Current public ports
 
 * **22/tcp** — SSH
-* **80/tcp** — HTTP (currently used for HTTP-only proxy baseline; later also for Let’s Encrypt HTTP-01 challenge)
-* **443/tcp** — HTTPS (Nginx is bound; TLS certs will be added later)
+* **80/tcp** — HTTP (Let's Encrypt HTTP-01 challenge + redirect to HTTPS)
+* **443/tcp** — HTTPS (Nginx reverse proxy for all applications)
 * **5432/tcp** — PostgreSQL (explicitly opened by request; note security implications below)
 
 > **Note:** Exposing PostgreSQL to the open internet is high risk unless strongly hardened (TLS + `pg_hba.conf` restrictions + strong auth, ideally IP allowlisting). This document reflects the current state; hardening work can be added in a later phase.
+
+### Currently deployed applications
+
+| Application | Internal Port | Public URL | Documentation |
+|-------------|---------------|------------|---------------|
+| PostgreSQL | 5432 (public) | Direct access | `docs/postgresql-setup.md` |
+| pgAdmin | 127.0.0.1:5050 | https://pgadmin.marin.cr | `docs/postgresql-setup.md` |
+| Cockpit | 127.0.0.1:9090 | https://admin.marin.cr | `docs/cockpit-setup.md` |
+| Nextcloud | 127.0.0.1:8082 | https://cloud.marin.cr | `docs/nextcloud-setup.md` |
+| MarinApp Web | 127.0.0.1:3021 | https://app.marin.cr | `docs/marinapp-setup.md` |
+| MarinApp API | 127.0.0.1:5000 | https://api.marin.cr | `docs/marinapp-setup.md` |
+| n8n | 127.0.0.1:5678 | https://n8n.marin.cr | `docs/n8n-setup.md` |
+
+All applications (except PostgreSQL) bind to localhost only and are accessed through the Nginx reverse proxy with TLS.
 
 ---
 
@@ -159,8 +165,12 @@ Root folder:
 ```
 /opt/infra
   apps/          # Application stacks (each app has its own folder)
+    marinapp/    # Custom full-stack application
+    nextcloud/   # File synchronization service
+    n8n/         # Workflow automation platform
+    postgres/    # PostgreSQL + pgAdmin
   proxy/         # Reverse proxy stack (Nginx) + TLS assets
-  shared/        # Shared scripts, backups, utilities (grows over time)
+  shared/        # Shared scripts, backups, utilities
   docs/          # Documentation/runbooks (this file lives here)
 ```
 
@@ -202,6 +212,21 @@ Current rule posture:
 
 * Default: deny incoming, allow outgoing
 * Allowed inbound: 22, 80, 443, 5432 (and IPv6 equivalents)
+
+### Phase 3 — TLS & Certificate Management (Completed)
+
+* Let's Encrypt certificates issued for all domains via certbot (webroot method)
+* HTTPS server blocks configured in Nginx per hostname
+* Centralized certificate renewal via `/opt/infra/shared/renew-all-certs.sh`
+* Auto-renewal configured via cron
+
+### Phase 4 — Applications (Completed)
+
+* **PostgreSQL + pgAdmin** — Database server with web admin interface
+* **Cockpit** — System administration UI with HTTP Basic Auth
+* **Nextcloud** — File synchronization with S3 backend and Redis cache
+* **MarinApp** — Custom full-stack application (Vite frontend + API)
+* **n8n** — Workflow automation platform using PostgreSQL backend
 
 ---
 
@@ -330,8 +355,6 @@ A dedicated Docker network named `proxy` is used as a shared internal network be
 * Allows Nginx to route to containers by service name (DNS-based) instead of hardcoded IPs
 * Prevents applications from needing public port mappings
 * Enables clean separation between public ingress (Nginx) and internal services
-
-Checked networks and created the shared `proxy` network:
 
 Checked networks and created the shared `proxy` network:
 
@@ -496,19 +519,23 @@ ufw status verbose
 
 ## Next steps (planned)
 
-### Phase 3 completion (when ready)
+### Phase 5 — Hardening (Optional)
 
-To fully complete Phase 3, add:
+* Enable TLS on PostgreSQL
+* Force SSL-only via `pg_hba.conf` (`hostnossl reject`, `hostssl ... scram-sha-256`)
+* Consider IP allowlisting for PostgreSQL if possible
+* Add IP allowlisting at Nginx level for admin interfaces (Cockpit, pgAdmin, n8n)
 
-* Certificate issuance with **certbot** (webroot method)
-* HTTPS server blocks in Nginx per hostname
-* Auto-renewal via cron and an Nginx reload hook
+### Adding new applications
 
-### Phase 4 — Applications
+To add a new application, follow the established pattern:
 
-* Add first app stack under `/opt/infra/apps/<appname>`
-* Attach app container(s) to the shared `proxy` network
-* Add per-host Nginx config to route `https://<app>.marin.cr` to the app
+1. Create folder under `/opt/infra/apps/<appname>`
+2. Create `compose.yml` with localhost-only port binding
+3. Create `.env` for secrets (never commit)
+4. Add Nginx config in `proxy/nginx/conf.d/<domain>.conf`
+5. Issue TLS certificate with certbot
+6. Document setup in `docs/<appname>-setup.md`
 
 ---
 
