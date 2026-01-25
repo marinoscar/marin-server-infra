@@ -1,26 +1,25 @@
 # Cockpit Behind Docker Nginx Reverse Proxy (admin.marin.cr)
 
-This document captures the **final, working, production-grade setup** for running **Cockpit** on a VPS **behind an Nginx reverse proxy running in Docker**, secured with **Let’s Encrypt TLS** and **HTTP Basic Auth**, and documents **all lessons learned** so this can be repeated cleanly without falling into the same traps.
+This document captures the **final, working setup** for running **Cockpit** on an Ubuntu host (systemd) while exposing it **only** via **https://admin.marin.cr** through an **Nginx reverse proxy running in Docker**.
 
-This is intentionally detailed and opinionated.
+It also documents the **permanent fix** for the “Cockpit socket failed with Result: resources” issue that can appear after a reboot.
 
 ---
 
-## 1. High-level Architecture (Final State)
+## 1. High-level architecture (final state)
 
-### What we are running
+**What runs where**
 
-* **Cockpit**: Installed directly on the host (systemd service)
-* **Nginx**: Runs inside Docker, acts as the single internet-facing entry point
-* **TLS**: Let’s Encrypt certificates stored on the host and mounted into Nginx
-* **Security**:
+- **Cockpit**: installed on the **host OS** (systemd socket/service)
+- **Nginx**: runs in **Docker** as the single internet-facing entry point
+- **TLS**: Let’s Encrypt cert for `admin.marin.cr` mounted into the Nginx container
+- **Security layers**
+  - Internet access: **HTTPS enforced**
+  - Nginx: **HTTP Basic Auth**
+  - Cockpit: **Linux user authentication**
+  - Cockpit binding: **localhost only** (no public listener)
 
-  * HTTPS enforced
-  * HTTP Basic Auth at Nginx layer
-  * Cockpit authentication via Linux users
-  * Cockpit bound only to localhost
-
-### Final traffic flow
+**Traffic flow**
 
 ```
 Internet
@@ -29,154 +28,125 @@ https://admin.marin.cr
   ↓
 Nginx (Docker container, host network)
   ↓
-HTTP proxy (localhost)
+Reverse proxy to localhost
   ↓
 Cockpit (systemd, 127.0.0.1:9090)
 ```
 
-### Why this architecture
+---
 
-* Cockpit **must run on the host** (it manages systemd, storage, networking, users)
-* Docker-to-host networking via `docker0` is unreliable on many VPS providers
-* Using **host network mode** for the reverse proxy eliminates an entire class of routing/firewall issues
-* Nginx remains containerized, reproducible, and consistent with the rest of the platform
+## 2. Why Cockpit is NOT run in Docker
+
+Cockpit is a system administration UI that integrates deeply with the host:
+- systemd/journald
+- users/groups/sudo
+- storage/mounts
+- networking
+
+Running it in Docker typically requires privileged containers and breaks key functionality. The correct approach is: **Cockpit on host**, **reverse proxy in Docker**.
 
 ---
 
-## 2. Why Cockpit is NOT Run in Docker
+## 3. The permanent fix (why it broke after reboot)
 
-Cockpit is:
+### Symptom
+`systemctl status cockpit.socket` shows something like:
 
-* A **system administration interface**
-* Deeply integrated with:
+- **Active: failed (Result: resources)**
+- “Failed to listen on cockpit.socket …”
 
-  * systemd
-  * journald
-  * storage devices
-  * user accounts
-  * networking
+### Root cause (most common in this setup)
+Cockpit was configured to bind to **an interface/IP that is not guaranteed to exist at boot**, e.g. Docker bridge `172.17.0.1` (docker0).
 
-Running Cockpit in Docker would:
+After a reboot (or if Docker starts later than systemd), that IP may not be ready when `cockpit.socket` starts, so systemd fails the socket with a “resources” error and **does not automatically recover**.
 
-* Break core functionality
-* Require privileged containers
-* Defeat the security model
+### Permanent solution
+Bind Cockpit to **localhost only**:
 
-**Correct decision**: Install Cockpit directly on the host OS.
-
----
-
-## 3. Why Nginx Runs in Docker (but with host networking)
-
-### Why Docker at all
-
-* Consistent with the rest of the platform
-* Clean separation of concerns
-* Easy certificate mounting
-* Repeatable configuration
-
-### Why `network_mode: host`
-
-Initial attempts used:
-
-* Docker bridge networking
-* `host.docker.internal`
-* `docker0` (172.17.0.1)
-
-**Observed failure mode**:
-
-* Containers could not reach host services on docker0
-* Requests would hang (no timeout, no response)
-* This is common on VPS platforms due to firewall / nftables rules
-
-**Final decision**:
-
-* Run Nginx in **host network mode**
-* Proxy to `127.0.0.1` directly
-
-This is the most reliable and simplest solution.
+- ✅ stable across reboot
+- ✅ works with Nginx in host network mode
+- ✅ reduces attack surface
 
 ---
 
-## 4. Directory Structure
-
-All proxy-related assets live under:
-
-```
-/opt/infra/proxy
-├── compose.yml
-├── nginx
-│   ├── conf.d
-│   │   └── 50-admin.marin.cr.conf
-│   └── snippets
-│       └── auth
-│           └── admin.htpasswd
-├── letsencrypt
-│   └── live/admin.marin.cr/
-└── webroot
-    └── .well-known/acme-challenge/
-```
-
----
-
-## 5. Install Cockpit (Host)
+## 4. Install Cockpit (host)
 
 ```bash
-apt update
-apt install -y cockpit
+sudo apt update
+sudo apt install -y cockpit
 ```
 
 Verify:
 
 ```bash
-systemctl status cockpit.socket
+sudo systemctl status cockpit.socket --no-pager
 ```
 
 ---
 
-## 6. Bind Cockpit to Localhost Only (Security)
+## 5. Bind Cockpit to localhost only (systemd drop-in)
 
-Create override:
+### 5.1 Create the drop-in directory + file
 
 ```bash
-mkdir -p /etc/systemd/system/cockpit.socket.d
-nano /etc/systemd/system/cockpit.socket.d/listen.conf
+sudo mkdir -p /etc/systemd/system/cockpit.socket.d
+sudo nano /etc/systemd/system/cockpit.socket.d/listen.conf
 ```
+
+Paste:
 
 ```ini
 [Socket]
+# IMPORTANT:
+# - The empty ListenStream= line resets the upstream defaults
+# - Only bind to localhost so the socket never depends on docker0/bridge IPs
 ListenStream=
 ListenStream=127.0.0.1:9090
 ```
 
-Apply:
+### 5.2 Apply the change
 
 ```bash
-systemctl daemon-reload
-systemctl restart cockpit.socket
+sudo systemctl daemon-reload
+
+# If it ever shows "failed", clear the failed state first:
+sudo systemctl reset-failed cockpit.socket || true
+
+sudo systemctl restart cockpit.socket
+sudo systemctl enable cockpit.socket
 ```
 
-Verify:
+### 5.3 Verify it’s correct
+
+Show the effective config:
 
 ```bash
-ss -tulnp | grep 9090
+sudo systemctl cat cockpit.socket
 ```
 
-Expected:
+Confirm only localhost is listening:
 
+```bash
+sudo ss -lntp | grep 9090 || true
 ```
-127.0.0.1:9090
+
+Expected: **only** `127.0.0.1:9090` (no `0.0.0.0`, no `172.17.0.1`).
+
+Optional quick local check:
+
+```bash
+curl -vk https://127.0.0.1:9090/ | head
 ```
 
 ---
 
-## 7. Create Linux Admin User
+## 6. Create Linux admin user (host)
 
 Cockpit authenticates against Linux users.
 
 ```bash
-adduser marinoscar
-usermod -aG sudo marinoscar
+sudo adduser marinoscar
+sudo usermod -aG sudo marinoscar
 ```
 
 Verify:
@@ -187,13 +157,22 @@ groups marinoscar
 
 ---
 
-## 8. Nginx Docker Compose (Host Network Mode)
+## 7. Nginx runs in Docker (host networking)
+
+### 7.1 Why host networking
+On many VPS providers, container-to-host reachability via `docker0` can be flaky due to firewall/nftables rules.
+
+**Using host networking makes Nginx talk to `127.0.0.1` directly**, which is the most reliable option.
+
+### 7.2 Example Docker Compose
 
 Edit:
 
 ```bash
-nano /opt/infra/proxy/compose.yml
+sudo nano /opt/infra/proxy/compose.yml
 ```
+
+Example:
 
 ```yaml
 services:
@@ -212,60 +191,60 @@ services:
 Bring it up:
 
 ```bash
-docker compose up -d --force-recreate
+cd /opt/infra/proxy
+sudo docker compose up -d --force-recreate
 ```
 
 Verify ports:
 
 ```bash
-ss -tulnp | grep -E ':80|:443'
+sudo ss -lntp | grep -E ':80|:443' || true
 ```
 
 ---
 
-## 9. Create HTTP Basic Auth Credentials
+## 8. HTTP Basic Auth credentials (for Nginx)
 
 Install tool:
 
 ```bash
-apt install -y apache2-utils
+sudo apt install -y apache2-utils
 ```
 
 Create auth file:
 
 ```bash
-mkdir -p /opt/infra/proxy/nginx/snippets/auth
-htpasswd -c /opt/infra/proxy/nginx/snippets/auth/admin.htpasswd marinoscar
+sudo mkdir -p /opt/infra/proxy/nginx/snippets/auth
+sudo htpasswd -c /opt/infra/proxy/nginx/snippets/auth/admin.htpasswd marinoscar
 ```
 
-Important lesson learned:
-
-> The auth file **must exist before the container is started**, or you must recreate the container.
+**Important lesson learned:** The auth file must exist before container start, or you must recreate/restart the container after creating it.
 
 ---
 
-## 10. Obtain TLS Certificate (Let’s Encrypt)
+## 9. TLS certificate (Let’s Encrypt)
 
 Nginx serves the ACME challenge via webroot.
 
 Create challenge directory:
 
 ```bash
-mkdir -p /opt/infra/proxy/webroot/.well-known/acme-challenge
+sudo mkdir -p /opt/infra/proxy/webroot/.well-known/acme-challenge
 ```
 
 Verify reachability:
 
 ```bash
-echo ok > /opt/infra/proxy/webroot/.well-known/acme-challenge/test.txt
+echo ok | sudo tee /opt/infra/proxy/webroot/.well-known/acme-challenge/test.txt >/dev/null
 curl http://admin.marin.cr/.well-known/acme-challenge/test.txt
 ```
 
 Run certbot (host):
 
 ```bash
-apt install -y certbot
-certbot certonly \
+sudo apt install -y certbot
+
+sudo certbot certonly \
   --webroot \
   --webroot-path=/opt/infra/proxy/webroot \
   --email you@marin.cr \
@@ -274,405 +253,236 @@ certbot certonly \
   -d admin.marin.cr
 ```
 
-Certificates land in:
+Certificates will be under:
 
 ```
-/opt/infra/proxy/letsencrypt/live/admin.marin.cr/
+/etc/letsencrypt/live/admin.marin.cr/
 ```
+
+(Your compose mounts `/opt/infra/proxy/letsencrypt` in the example; if you keep certs in `/etc/letsencrypt`, mount that path instead, or bind-mount `/etc/letsencrypt` into `/opt/infra/proxy/letsencrypt`.)
 
 ---
 
-## 11. Nginx Virtual Host Configuration
+## 10. Nginx virtual host config for Cockpit
+
+Edit:
 
 ```bash
-nano /opt/infra/proxy/nginx/conf.d/50-admin.marin.cr.conf
+sudo nano /opt/infra/proxy/nginx/conf.d/50-admin.marin.cr.conf
 ```
 
-[proxy/nginx/conf.d/pgadmin.marin.cr.conf](https://github.com/marinoscar/marin-server-infra/blob/a11a8a4240e1bc68c92a6b8f193c157f3bb7ae8b/proxy/nginx/conf.d/pgadmin.marin.cr.conf)
-
-Reload:
-
-```bash
-nginx -t
-nginx -s reload
-```
-
-### 11.1 Why a Heartbeat Endpoint Is Required
-
-Because the admin site is protected by **HTTP Basic Auth**, any third-party uptime monitoring service (e.g. StatusCake, UptimeRobot) would otherwise see:
-
-* `401 Unauthorized`
-* `403 Forbidden`
-
-…and incorrectly report the server as **down**.
-
-Additionally:
-
-* Self-hosted tools (Netdata, Cockpit) **cannot alert if the server is offline**
-* Crash detection **must be performed externally**
-
-**Correct solution**: expose a tiny, unauthenticated endpoint whose sole purpose is to answer:
-
-> “Is this server reachable over HTTPS right now?”
-
-This endpoint is called **`/heartbeat`**.
-
----
-
-### 11.2 Heartbeat Design Principles
-
-The `/heartbeat` endpoint is intentionally minimal:
-
-* No authentication
-* No backend dependency
-* No application logic
-* No sensitive data
-* Static response
-
-If Nginx can respond, the server is considered **up**.
-
-This avoids:
-
-* Credential sharing with third-party services
-* False positives caused by auth
-* Tight coupling to Cockpit availability
-
----
-
-### 11.3 Heartbeat Implementation (Nginx)
-
-The heartbeat endpoint is implemented **inside the same HTTPS virtual host**, using the existing TLS certificate for `admin.marin.cr`.
-
-No additional certificates or domains are required.
+Recommended config (includes heartbeat + WebSocket support):
 
 ```nginx
-location = /heartbeat {
-    auth_basic off;
-    access_log off;
-    add_header Content-Type text/plain;
-    add_header Cache-Control "no-store";
-    return 200 "OK\n";
+# admin.marin.cr
+# - HTTP: ACME challenge + redirect to HTTPS
+# - HTTPS: Basic Auth protected reverse proxy to Cockpit (localhost:9090)
+# - Heartbeat: unauthenticated endpoint for external uptime monitors
+
+# WebSocket helper
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 80;
+    server_name admin.marin.cr;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location = /heartbeat {
+        access_log off;
+        add_header Content-Type text/plain;
+        return 200 "OK\n";
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name admin.marin.cr;
+
+    ssl_certificate     /etc/letsencrypt/live/admin.marin.cr/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/admin.marin.cr/privkey.pem;
+
+    auth_basic "Restricted Admin Access";
+    auth_basic_user_file /etc/nginx/snippets/auth/admin.htpasswd;
+
+    location = /heartbeat {
+        auth_basic off;
+        access_log off;
+        add_header Content-Type text/plain;
+        add_header Cache-Control "no-store";
+        return 200 "OK\n";
+    }
+
+    location / {
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        $connection_upgrade;
+
+        # Cockpit uses long-lived WebSockets; reduce random disconnects
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+        proxy_buffering off;
+
+        # Option A (recommended): proxy to Cockpit over HTTPS (self-signed on localhost)
+        proxy_pass https://127.0.0.1:9090;
+        proxy_ssl_verify off;
+
+        # Option B: if you KNOW your Cockpit is plain HTTP (less common), use:
+        # proxy_pass http://127.0.0.1:9090;
+    }
 }
 ```
 
-Key details:
+---
 
-* `auth_basic off` overrides the server-level Basic Auth
-* The endpoint is still served **over HTTPS**
-* The response is constant and predictable
-* The endpoint does not proxy to Cockpit or any backend
+## 11. Nginx commands (because Nginx is in Docker)
+
+If Nginx runs **on the host**, you would do:
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+But in this setup Nginx is inside the container, so use Docker commands instead.
+
+### 11.1 Test config
+```bash
+sudo docker exec proxy-nginx nginx -t
+```
+
+### 11.2 Reload (no downtime)
+```bash
+sudo docker exec proxy-nginx nginx -s reload
+```
+
+### 11.3 If you’re using docker compose and need the right directory
+From the folder that contains your compose file:
+
+```bash
+cd /opt/infra/proxy
+sudo docker compose ps
+sudo docker compose restart nginx
+```
 
 ---
 
-### 11.4 Optional HTTP Heartbeat (ACME + Debugging)
+## 12. Validation checklist (critical)
 
-An identical `/heartbeat` endpoint is also exposed on port 80:
+### Host checks
+- Cockpit only on localhost:
 
-```nginx
-location = /heartbeat {
-    access_log off;
-    add_header Content-Type text/plain;
-    return 200 "OK\n";
-}
+```bash
+sudo ss -lntp | grep 9090 || true
 ```
 
-This is optional but useful for:
+- Cockpit socket healthy:
 
-* Debugging DNS / routing issues
-* Verifying reachability without TLS
-* Simplifying early monitoring setup
-
-If HTTPS-only monitoring is preferred, this block can be removed.
-
----
-
-### 11.5 How This Is Used in Practice
-
-External monitoring services are configured to check:
-
-```
-https://admin.marin.cr/heartbeat
+```bash
+sudo systemctl status cockpit.socket --no-pager
 ```
 
-Expected result:
-
-* HTTP status: `200`
-* Body contains: `OK`
-
-If this check fails, the server is considered **unreachable or crashed**, and alerts are triggered.
-
-This cleanly separates concerns:
-
-| Concern                   | Tool                              |
-| ------------------------- | --------------------------------- |
-| Is the server alive?      | External monitor via `/heartbeat` |
-| Is the server healthy?    | Netdata                           |
-| What is broken right now? | Cockpit                           |
-
----
-
-### 11.6 Validation
+### Public checks
+- Heartbeat is up:
 
 ```bash
 curl -i https://admin.marin.cr/heartbeat
 ```
 
 Expected:
+- HTTP status: `200`
+- Body: `OK`
 
-```
-HTTP/2 200
-OK
-```
-
-Verify that the admin UI still requires authentication:
+- Admin UI requires auth:
 
 ```bash
 curl -i https://admin.marin.cr/
 ```
 
 Expected:
-
-```
-401 Unauthorized
-```
+- `401 Unauthorized` (or a Basic Auth prompt in the browser)
 
 ---
 
-### 11.7 Security Considerations
+## 13. Troubleshooting (fast)
 
-The `/heartbeat` endpoint:
-
-* Reveals no system information
-* Exposes no credentials
-* Performs no computation
-* Is standard practice in production systems
-
-This is a **safe and intentional exception** to Basic Auth, and is required for reliable external monitoring.
-
----
-
-## 12. Validation Checklist (Critical)
-
-### Host checks
-
+### Cockpit socket stuck in failed state
 ```bash
-curl -I http://127.0.0.1:9090/ping
+sudo systemctl reset-failed cockpit.socket
+sudo systemctl restart cockpit.socket
+sudo systemctl status cockpit.socket --no-pager
 ```
 
-Expected: `200 OK`
-
-### External checks
-
+### Check what it’s actually listening on
 ```bash
-curl -I https://admin.marin.cr
+sudo ss -lntp | grep 9090 || true
 ```
 
-Expected: `401 Unauthorized`
-
-### Browser flow
-
-1. Open [https://admin.marin.cr](https://admin.marin.cr)
-2. Enter Basic Auth credentials
-3. Cockpit login screen appears
-4. Login as Linux user
-5. Click "Turn on administrative access" to elevate
-
----
-
-Perfect — here is a **clean, production-ready addition** you can drop straight into your article.
-I’ve written it to match the tone, rigor, and *actual steps that worked* for **Ubuntu 24.04 (noble)**, and to explicitly document the pitfalls you hit so you (or future-you) don’t repeat them.
-
-I recommend inserting this **after Section 12 (Validation Checklist)** and **before Lessons Learned**, because it’s an *optional but powerful enhancement* to Cockpit.
-
----
-
-## 13. Enable File System Access in Cockpit (Navigator)
-
-By default, Cockpit does **not** include a file system browser UI.
-For secure, browser-based access to the server filesystem (without SSH, SFTP, or additional ports), we install **Cockpit Navigator**.
-
-This integrates directly into Cockpit, respects Linux permissions, and works cleanly behind our existing Nginx reverse proxy.
-
----
-
-### 13.1 Why Cockpit Navigator
-
-Cockpit Navigator provides:
-
-* Web-based file browsing
-* Upload / download files
-* Create, rename, delete files and folders
-* Edit text files
-* View and change permissions and ownership
-
-All actions are:
-
-* Authenticated via Cockpit (Linux users)
-* Protected by sudo elevation (“Turn on administrative access”)
-* Exposed **only** through the existing Cockpit UI
-
-No new services, ports, or containers are introduced.
-
----
-
-### 13.2 Important Notes (Read First)
-
-* Ubuntu **24.04 (noble)** is **not supported** by the official 45Drives APT repository at this time
-* Attempting to use the repo setup script will:
-
-  * Fail
-  * Break APT with a malformed sources file
-* GitHub “latest” release URLs **do not contain `.deb` assets**
-
-**Correct approach**: install the last known working `.deb` directly.
-
----
-
-### 13.3 Install Cockpit Navigator (Ubuntu 24.04 – Tested)
-
-Download the pinned release that is known to work:
-
+### Confirm your drop-in is being applied
 ```bash
-cd /tmp
-wget https://github.com/45Drives/cockpit-navigator/releases/download/v0.5.10/cockpit-navigator_0.5.10-1focal_all.deb
+sudo systemctl cat cockpit.socket
 ```
 
-Install it:
-
+### Nginx container reload after config change
 ```bash
-apt install ./cockpit-navigator_0.5.10-1focal_all.deb
+sudo docker exec proxy-nginx nginx -t
+sudo docker exec proxy-nginx nginx -s reload
 ```
 
-This may also install small dependencies (`zip`, `unzip`), which is expected.
-
----
-
-### 13.4 Restart Cockpit (Important)
-
-Restart **only** the Cockpit socket (do not expose new listeners):
-
+### Logs
 ```bash
-systemctl daemon-reexec
-systemctl daemon-reload
-systemctl stop cockpit.service
-systemctl restart cockpit.socket
-```
-
-Verify Cockpit is still bound **only** to localhost:
-
-```bash
-ss -tulnp | grep 9090
-```
-
-Expected:
-
-```
-127.0.0.1:9090
-```
-
-There must be **no** `0.0.0.0` or `172.17.0.1` listeners.
-
----
-
-### 13.5 Access Navigator in the Browser
-
-1. Open [https://admin.marin.cr](https://admin.marin.cr)
-2. Authenticate via HTTP Basic Auth
-3. Log into Cockpit
-4. (Optional) Click **“Turn on administrative access”**
-5. Select **Navigator** from the left sidebar
-
-You can also access it directly:
-
-```
-https://admin.marin.cr/navigator/
+sudo journalctl -u cockpit.socket -u cockpit.service --no-pager -n 200
+sudo docker logs --tail 200 proxy-nginx
 ```
 
 ---
 
-### 13.6 Security Model (Why This Is Safe)
+## 14. Risks and security notes
 
-Navigator inherits all existing security layers:
+### Binding Cockpit to localhost only
+**Risk:** You can’t access Cockpit directly via `https://server-ip:9090/` anymore.  
+**Benefit:** This is exactly what you want—Cockpit is reachable **only** through your authenticated reverse proxy.
 
-* TLS enforced at Nginx
-* HTTP Basic Auth at Nginx
-* Linux user authentication in Cockpit
-* Optional sudo elevation per session
-* Cockpit bound to localhost only
+### Reverse proxying to Cockpit over HTTPS with `proxy_ssl_verify off`
+- Nginx → Cockpit on localhost uses a **self-signed** cert by default.
+- Disabling verification is acceptable here because:
+  - traffic never leaves the host network stack
+  - Cockpit is not exposed publicly
+  - the threat model for MITM on localhost is extremely low
 
-No additional ingress paths are created.
+If you want stricter verification, you can pin Cockpit’s cert/CA and enable verify, but it’s more work and usually not worth it for localhost-only.
 
----
+### Double-auth (Basic Auth + Cockpit login)
+This is good defense-in-depth. The main tradeoff is user convenience (two prompts).
 
-### 13.7 Validation Checklist
-
-```bash
-ls -la /usr/share/cockpit/navigator
-```
-
-Expected: files present.
-
-In the UI:
-
-* Navigator appears in sidebar
-* Root filesystem (`/`) is visible
-* “Limited access” badge disappears after sudo elevation
-* File operations work as expected
+### Reboot resilience
+The permanent fix is: **do not bind Cockpit to docker0/bridge IPs**. Localhost binding avoids boot ordering issues between systemd and Docker/network availability.
 
 ---
 
-### 13.8 Known Pitfalls (Lessons Learned)
+## Appendix A: What caused the original outage?
 
-* ❌ Do not use `repo.45drives.com/setup` on Ubuntu 24.04
-* ❌ Do not use wildcard GitHub URLs (`*_all.deb`)
-* ❌ Do not restart `cockpit.service` without verifying socket bindings
-* ✅ Use a pinned `.deb`
-* ✅ Keep Cockpit bound to `127.0.0.1`
+The failure mode you hit is consistent with:
 
----
+- Cockpit socket configured to listen on `172.17.0.1:9090` (docker0)
+- After reboot, docker0/IP not present when cockpit.socket starts
+- systemd fails the socket with **Result: resources**
+- Cockpit becomes unreachable until the socket is restarted or reconfigured
 
-## (Renumber existing sections)
-
-Your current **Lessons Learned** becomes **Section 14**, and **Current State Summary** becomes **Section 15**.
-
----
-
-## Why this addition matters
-
-This turns Cockpit into a **complete secure admin plane**:
-
-* Systemd
-* Logs
-* Networking
-* Storage
-* **Filesystem**
-
-—all without SSH exposure or extra services.
-
-If you want, next I can:
-
-* Merge this directly into a full revised markdown
-* Add a “Known Gotchas” appendix
-* Or create a short TL;DR diagram showing Cockpit + Navigator flow
-
-Just say the word.
-
-
-## 14. Current State Summary
-
-* admin.marin.cr
-* TLS enforced
-* Basic Auth required
-* Cockpit not exposed to internet
-* Nginx containerized
-* Cockpit host-native
-* Clean, repeatable, secure
-
----
-
-## Final Note
-
-This setup is **production-grade**, **secure**, and **battle-tested**.
-If you follow this document step-by-step, you will not repeat the earlier mistakes.
-
-Victory achieved — document preserved.
+The localhost-only drop-in removes that dependency and is the best long-term fix.
