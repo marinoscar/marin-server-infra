@@ -1,0 +1,122 @@
+# =============================================================================
+# Knecta - Production Docker Compose for VPS
+# =============================================================================
+# Location on VPS: /opt/infra/apps/knecta/compose.yml
+#
+# Usage:
+#   docker compose up -d --build
+#   docker compose logs -f
+#   docker compose down
+#
+# Prerequisites:
+#   - .env file with all required variables (see .env.example)
+#   - Cloud PostgreSQL accessible from VPS (configured in .env)
+#   - VPS Nginx proxy (host network) routes knecta.marin.cr to localhost ports
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # API - NestJS Backend (production build)
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: ./repo/apps/api
+      dockerfile: Dockerfile
+      target: production
+    container_name: knecta-api
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - NEO4J_HOST=neo4j
+      - SANDBOX_URL=http://sandbox:8000
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      sandbox:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3100:3000"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - app-network
+
+  # ---------------------------------------------------------------------------
+  # Web - React Frontend (nginx:alpine serving static files)
+  # ---------------------------------------------------------------------------
+  web:
+    build:
+      context: ./repo/apps/web
+      dockerfile: Dockerfile
+      target: production
+    container_name: knecta-web
+    ports:
+      - "127.0.0.1:3101:80"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    networks:
+      - app-network
+
+  # ---------------------------------------------------------------------------
+  # Graph Database - Neo4j 5 Community
+  # ---------------------------------------------------------------------------
+  neo4j:
+    image: neo4j:5-community
+    container_name: knecta-neo4j
+    environment:
+      - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD}
+      - NEO4J_server_memory_heap_initial__size=512m
+      - NEO4J_server_memory_heap_max__size=512m
+      - NEO4J_server_memory_pagecache_size=256m
+    volumes:
+      - ./data/neo4j:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u ${NEO4J_USER:-neo4j} -p ${NEO4J_PASSWORD} 'RETURN 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    networks:
+      - app-network
+
+  # ---------------------------------------------------------------------------
+  # Python Sandbox - Code Execution (Flask/Gunicorn)
+  # ---------------------------------------------------------------------------
+  sandbox:
+    build:
+      context: ./repo/infra/sandbox
+      dockerfile: Dockerfile
+    container_name: knecta-sandbox
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+    networks:
+      - app-network
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  app-network:
+    driver: bridge
