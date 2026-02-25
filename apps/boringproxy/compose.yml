@@ -7,19 +7,23 @@ services:
     image: boringproxy:local
     restart: unless-stopped
 
-    # Set these the way you want:
+    environment:
+      - USER=root
+
     command:
-      - server                     # Run boringproxy in server mode (VPS side)
+      - server
       - -admin-domain
-      - proxy.marin.cr             # Admin UI hostname (Nginx will expose this)
-      - -behind-proxy              # Trust/use X-Forwarded-* headers from Nginx
-      - -allow-http                # Allow HTTP because Nginx terminates HTTPS
+      - proxy.marin.cr
+      - -behind-proxy
+      - -allow-http
       - -http-port
-      - "8080"                     # Internal HTTP port for Nginx -> boringproxy
+      - "8080"
       - -public-ip
-      - 195.26.247.169             # Your VPS public IP (matches DNS A record)
-      - -print-login               # Print login link/token in logs
+      - 195.26.247.169
+
+    # ✅ expose boringproxy only to the VPS itself (not the public internet)
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:18080:8080"
+
     volumes:
       - ./data:/storage
