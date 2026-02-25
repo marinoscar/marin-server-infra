@@ -1,0 +1,10 @@
+services:
+  frps:
+    image: snowdreamtech/frps:latest
+    container_name: frps
+    restart: unless-stopped
+    ports:
+      - "7000:7000"
+      - "13389:13389"
+    volumes:
+      - ./frps.toml:/etc/frp/frps.toml:ro

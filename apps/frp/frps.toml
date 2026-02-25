@@ -1,0 +1,3 @@
+bindPort = 7000
+auth.method = "token"
+auth.token = "JZ10H7GYEQX8V5BPVVL7PQU9C6SO7EFH"
