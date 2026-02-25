@@ -1,0 +1,29 @@
+services:
+  boringproxy:
+    container_name: boringproxy
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: boringproxy:local
+    restart: unless-stopped
+
+    # Set these the way you want:
+    command:
+      - server                     # Run boringproxy in server mode (VPS side)
+      - -admin-domain
+      - proxy.marin.cr             # Admin UI hostname (Nginx will expose this)
+      - -behind-proxy              # Trust/use X-Forwarded-* headers from Nginx
+      - -allow-http                # Allow HTTP because Nginx terminates HTTPS
+      - -http-port
+      - "8080"                     # Internal HTTP port for Nginx -> boringproxy
+      - -public-ip
+      - 195.26.247.169             # Your VPS public IP (matches DNS A record)
+      - -print-login               # Print login link/token in logs
+    volumes:
+      - ./data:/storage
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true

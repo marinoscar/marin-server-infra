@@ -29,6 +29,18 @@ apps/marinapp/web.config.json
 apps/marinapp/web.config.js
 apps/marinapp/api.config.json
 
+# Knecta
+apps/knecta/repo
+
+# Boringproxy
+apps/boringproxy/src
+
 # NextCloud
+
+# Backups / dumps (never commit)
+*.sql
+*.zip
+*.tar.gz
+apps/postgres/data-pg16-backup
 
 /.claude
