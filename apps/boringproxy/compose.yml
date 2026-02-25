@@ -19,11 +19,7 @@ services:
       - -public-ip
       - 195.26.247.169             # Your VPS public IP (matches DNS A record)
       - -print-login               # Print login link/token in logs
+    ports:
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./data:/storage
-    networks:
-      - proxy
-
-networks:
-  proxy:
-    external: true
