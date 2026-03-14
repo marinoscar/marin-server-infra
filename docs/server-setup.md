@@ -53,6 +53,7 @@ The setup is designed to scale to multiple self-hosted applications with consist
 | MarinApp Web | 127.0.0.1:3021 | https://app.marin.cr | `docs/marinapp-setup.md` |
 | MarinApp API | 127.0.0.1:5000 | https://api.marin.cr | `docs/marinapp-setup.md` |
 | n8n | 127.0.0.1:5678 | https://n8n.marin.cr | `docs/n8n-setup.md` |
+| Authentik | 127.0.0.1:9000 | https://auth.marin.cr | `docs/authentik-setup.md` |
 
 All applications (except PostgreSQL) bind to localhost only and are accessed through the Nginx reverse proxy with TLS.
 

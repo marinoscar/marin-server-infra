@@ -1,0 +1,33 @@
+services:
+  server:
+    image: ghcr.io/goauthentik/server:2026.2.1
+    container_name: infra-authentik-server
+    command: server
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9443:9443"
+    volumes:
+      - ./data:/data
+      - ./custom-templates:/templates
+    shm_size: 512mb
+
+  worker:
+    image: ghcr.io/goauthentik/server:2026.2.1
+    container_name: infra-authentik-worker
+    command: worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data
+      - ./certs:/certs
+      - ./custom-templates:/templates
+    shm_size: 512mb
+
+networks:
+  default:
+    name: proxy
+    external: true
