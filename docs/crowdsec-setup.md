@@ -292,14 +292,50 @@ cscli parsers list
 
 ## 6. CrowdSec Console (cloud dashboard)
 
-This server is enrolled in the CrowdSec Console at https://app.crowdsec.net.
+This server is enrolled in the CrowdSec Console at https://app.crowdsec.net. There is no self-hosted web UI — CrowdSec is managed via the `cscli` command line on the server, and the console provides a cloud-based dashboard for visibility and blocklist management.
 
 ### What the console provides
 
-- **Alerts dashboard** — visual view of all detected attacks, with geolocation and AS information
-- **Decisions view** — which IPs are currently banned and why
-- **Community blocklists** — subscribe to shared threat intelligence from other CrowdSec users worldwide
-- **Instance health** — confirms your CrowdSec agent is online and reporting
+- **Alerts tab** — visual view of all detected attacks, with geolocation, AS information, and attack type. These are informational — by the time you see them, CrowdSec has already banned the attacker
+- **Decisions tab** — which IPs are currently banned and why. Shows both local decisions (from your server's detection) and community blocklist decisions
+- **Blocklists** — subscribe to community-shared threat intelligence. When another CrowdSec user anywhere in the world detects an attacker, that IP can be pre-emptively blocked on your server before it ever attacks you
+- **Security Engines** — confirms your CrowdSec agent is online and reporting
+
+### How the two-way sync works
+
+CrowdSec has several console features that control what data flows between your server and the cloud:
+
+| Feature | Direction | What it does |
+|---|---|---|
+| `custom` | Server → Console | Forwards alerts from custom scenarios |
+| `manual` | Server → Console | Forwards manually created decisions (`cscli decisions add`) |
+| `tainted` | Server → Console | Forwards alerts from modified/tainted scenarios |
+| `context` | Server → Console | Forwards additional context (HTTP headers, etc.) with alerts |
+| `console_management` | Console → Server | **Receives decisions from the console** (community blocklists) |
+
+All five features are enabled on this server. The critical one is `console_management` — without it, the Decisions tab in the console shows "No Security Engine or Integration Installed" and community blocklists are not enforced.
+
+To check the current status:
+```bash
+cscli console status
+```
+
+All options should show ✅. If `console_management` ever gets disabled:
+```bash
+cscli console enable console_management
+systemctl reload crowdsec
+```
+
+### Blocklists
+
+To subscribe to community blocklists:
+
+1. Log in to https://app.crowdsec.net
+2. Go to **Blocklists**
+3. Browse available lists and click **Subscribe**
+4. Select your security engine and confirm
+
+Once subscribed, your server automatically downloads the blocklist and the firewall bouncer enforces it via iptables. Blocklisted IPs are blocked from all ports (SSH, HTTP, PostgreSQL, etc.) — the same as locally-detected bans.
 
 ### Enrollment details
 
@@ -309,7 +345,7 @@ The server was enrolled with:
 cscli console enroll cmmpyf9e3000302l4ze6wj9pr
 ```
 
-After enrollment, the instance was accepted in the console web UI and CrowdSec was restarted.
+After enrollment, the instance was accepted in the console web UI, `console_management` was enabled, and CrowdSec was restarted.
 
 ### Re-enrollment (if needed)
 
@@ -320,7 +356,8 @@ If the enrollment is lost (e.g., after reinstalling CrowdSec):
 3. Copy the enrollment key
 4. Run: `cscli console enroll <key>`
 5. Accept the instance in the console
-6. Restart: `systemctl restart crowdsec`
+6. Enable console management: `cscli console enable console_management`
+7. Restart: `systemctl restart crowdsec`
 
 ---
 
@@ -571,13 +608,26 @@ iptables -L -n | grep -i crowdsec
 cscli console enroll cmmpyf9e3000302l4ze6wj9pr
 ```
 
-Accepted the instance at https://app.crowdsec.net, then:
+Accepted the instance at https://app.crowdsec.net.
+
+### Step 6: Enable console management (two-way sync)
+
+By default, enrollment only sends alerts **to** the console. To also **receive** community blocklist decisions from the console:
 
 ```bash
-systemctl restart crowdsec
+cscli console enable console_management
+systemctl reload crowdsec
 ```
 
-### Step 6: Log rotation
+Verified:
+```bash
+cscli console status
+# All five options should show ✅
+```
+
+Without this step, the Decisions tab in the console shows "No Security Engine or Integration Installed" and community blocklists are not enforced on the server.
+
+### Step 7: Log rotation
 
 Created `/etc/logrotate.d/nginx-proxy`:
 ```
