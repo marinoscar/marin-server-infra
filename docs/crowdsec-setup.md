@@ -65,7 +65,7 @@ CrowdSec has three parts that work together on this server:
 
 **1. Agent + LAPI** (`crowdsec.service`)
 - The **Agent** continuously reads log files and compares each line against known attack patterns (called "scenarios")
-- When a pattern matches (e.g., 5 failed SSH logins from the same IP in 30 seconds), the agent creates an **alert** and a **decision** (usually "ban this IP for 4 hours")
+- When a pattern matches (e.g., 5 failed SSH logins from the same IP in 30 seconds), the agent creates an **alert** and a **decision** (ban duration depends on the profile — see "Ban duration policy" below)
 - The **LAPI** (Local API) is the internal database that stores all alerts and decisions. It listens on `127.0.0.1:8080` (localhost only, not exposed to the internet)
 
 **2. Firewall Bouncer** (`crowdsec-firewall-bouncer.service`)
@@ -151,7 +151,56 @@ Collections are bundles of parsers (log readers) and scenarios (attack patterns)
 
 ---
 
-## 4. How Nginx logs reach CrowdSec
+## 4. Ban duration policy
+
+Ban durations are configured in `/etc/crowdsec/profiles.yaml`. This server uses **escalating bans** — repeat offenders get progressively longer bans, and SSH attackers are permanently banned after the 5th offense.
+
+### SSH brute force (scenarios starting with `crowdsecurity/ssh`)
+
+| Offense | Ban duration |
+|---------|-------------|
+| 1st | 24 hours |
+| 2nd | 48 hours |
+| 3rd | 72 hours |
+| 4th | 96 hours |
+| 5th and beyond | **1 year** (effectively permanent) |
+
+SSH is the most sensitive attack surface — it provides direct shell access. After 5 offenses, the IP has demonstrated persistent malicious intent and is banned for 1 year.
+
+### All other attacks (HTTP probing, CVE exploits, etc.)
+
+| Offense | Ban duration |
+|---------|-------------|
+| 1st | 24 hours |
+| 2nd | 48 hours |
+| 3rd | 72 hours |
+| Nth | N × 24 hours |
+
+HTTP attacks use escalating 24-hour increments without a permanent cap, because web-facing IPs (cloud providers, CDNs) are more likely to be reassigned to legitimate users.
+
+### How it works technically
+
+CrowdSec profiles are evaluated in order. The SSH profile is listed first and matches any scenario starting with `crowdsecurity/ssh`. If it matches, `on_success: break` stops evaluation. If it doesn't match (i.e., it's not an SSH attack), the default profile handles it.
+
+The `duration_expr` uses `GetDecisionsCount()` to check how many times an IP has been banned before, then calculates the new duration. For SSH, a ternary operator switches to `8760h` (1 year) once the count reaches 5.
+
+### Changing the policy
+
+To modify ban durations, edit `/etc/crowdsec/profiles.yaml` and reload:
+
+```bash
+nano /etc/crowdsec/profiles.yaml
+systemctl reload crowdsec
+```
+
+If the reload fails, check the error with:
+```bash
+journalctl -u crowdsec --no-pager -n 5
+```
+
+---
+
+## 5. How Nginx logs reach CrowdSec
 
 By default, the `nginx:1.27-alpine` Docker image sends logs to stdout/stderr (visible via `docker logs`). CrowdSec cannot read Docker stdout — it needs actual log files on the host filesystem.
 
@@ -215,7 +264,7 @@ tail -f /opt/infra/proxy/nginx/logs/access.log
 
 ---
 
-## 5. Operational commands
+## 6. Operational commands
 
 All commands run as root.
 
@@ -290,7 +339,7 @@ cscli parsers list
 
 ---
 
-## 6. CrowdSec Console (cloud dashboard)
+## 7. CrowdSec Console (cloud dashboard)
 
 This server is enrolled in the CrowdSec Console at https://app.crowdsec.net. There is no self-hosted web UI — CrowdSec is managed via the `cscli` command line on the server, and the console provides a cloud-based dashboard for visibility and blocklist management.
 
@@ -361,7 +410,7 @@ If the enrollment is lost (e.g., after reinstalling CrowdSec):
 
 ---
 
-## 7. UFW coexistence
+## 8. UFW coexistence
 
 CrowdSec and UFW both use iptables, but they do not conflict:
 
@@ -376,7 +425,7 @@ This means:
 
 ---
 
-## 8. Configuration files reference
+## 9. Configuration files reference
 
 ### Host-level files (not in Git)
 
@@ -385,6 +434,7 @@ This means:
 | `/etc/crowdsec/config.yaml` | Main CrowdSec configuration |
 | `/etc/crowdsec/acquis.yaml` | Default log acquisition sources (SSH, syslog) |
 | `/etc/crowdsec/acquis.d/nginx.yaml` | Nginx log acquisition (added during setup) |
+| `/etc/crowdsec/profiles.yaml` | Ban duration policy (escalating bans, SSH permanent after 5th) |
 | `/etc/crowdsec/scenarios/` | Enabled attack detection scenarios |
 | `/etc/crowdsec/parsers/` | Enabled log parsers |
 | `/etc/crowdsec/collections/` | Enabled collections (bundles of parsers + scenarios) |
@@ -402,7 +452,7 @@ This means:
 
 ---
 
-## 9. Upgrading
+## 10. Upgrading
 
 ### Update CrowdSec packages
 
@@ -423,7 +473,7 @@ This downloads the latest attack patterns from the CrowdSec hub. It is safe to r
 
 ---
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 ### CrowdSec not detecting attacks
 
@@ -507,7 +557,7 @@ tail -1 /opt/infra/proxy/nginx/logs/access.log
 
 ---
 
-## 11. What is NOT covered (intentionally)
+## 12. What is NOT covered (intentionally)
 
 | Feature | Why it is skipped |
 |---|---|
@@ -517,7 +567,7 @@ tail -1 /opt/infra/proxy/nginx/logs/access.log
 
 ---
 
-## 12. Installation steps performed
+## 13. Installation steps performed
 
 These steps are documented for reproducibility. All commands were run as root.
 
