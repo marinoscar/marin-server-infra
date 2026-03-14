@@ -54,6 +54,8 @@ The setup is designed to scale to multiple self-hosted applications with consist
 | MarinApp API | 127.0.0.1:5000 | https://api.marin.cr | `docs/marinapp-setup.md` |
 | n8n | 127.0.0.1:5678 | https://n8n.marin.cr | `docs/n8n-setup.md` |
 | Authentik | 127.0.0.1:9000 | https://auth.marin.cr | `docs/authentik-setup.md` |
+| Knecta Web | 127.0.0.1:3101 | https://knecta.marin.cr | `docs/knecta-setup.md` |
+| Knecta API | 127.0.0.1:3100 | https://knecta.marin.cr/api | `docs/knecta-setup.md` |
 
 All applications (except PostgreSQL) bind to localhost only and are accessed through the Nginx reverse proxy with TLS.
 
