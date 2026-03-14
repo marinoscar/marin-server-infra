@@ -1,0 +1,13 @@
+services:
+  portainer:
+    image: portainer/portainer-ce:2.39.0
+    container_name: portainer
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9005:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+
+volumes:
+  portainer_data:

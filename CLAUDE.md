@@ -84,6 +84,7 @@ These preferences are documented in `docs/server-setup.md`:
 | Nextcloud | 8082 | cloud.marin.cr |
 | pgAdmin | 5050 | pgadmin.marin.cr |
 | Cockpit | 9090 | admin.marin.cr |
+| Portainer | 9005 | portainer.marin.cr |
 | PostgreSQL | 5432 | Direct (no proxy) |
 
 ## Verification Commands
@@ -111,4 +112,5 @@ Detailed runbooks are in `docs/`:
 - `marinapp-setup.md` - Full-stack app deployment
 - `nextcloud-setup.md` - File sync with S3 backend
 - `cockpit-setup.md` - Admin UI with Basic Auth
+- `portainer-setup.md` - Docker management UI with Authentik OAuth
 - `certificate-renewal-setup.md` - TLS automation
