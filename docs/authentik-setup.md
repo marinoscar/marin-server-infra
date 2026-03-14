@@ -508,6 +508,70 @@ docker restart proxy-nginx
 
 ---
 
+## 17. Forward Auth Integration (Protecting Other Services)
+
+Authentik can protect other services on this server using the **forward auth** pattern (`auth_request` in Nginx). A reusable Nginx snippet is provided for this purpose.
+
+### Reusable snippet
+
+```
+/opt/infra/proxy/nginx/snippets/authentik-forward-auth.conf
+```
+
+This snippet provides the `/outpost.goauthentik.io` location (for auth subrequests and browser login flows) and the `@goauthentik_proxy_signin` redirect handler.
+
+### How to protect a new service
+
+**Step 1 — Authentik admin UI** (`https://auth.marin.cr/if/admin/`):
+
+1. Create a **Proxy Provider** (type: Forward auth single application, external host: `https://<domain>`)
+2. Create an **Application** linked to that provider
+3. Edit the **authentik Embedded Outpost** and add the application to the **Selected** list
+4. Optionally create a **Group** and bind it to the application to restrict access
+
+**Step 2 — Nginx config** for the service:
+
+Add these directives to the HTTPS `server` block:
+
+```nginx
+# Authentik forward auth
+include /etc/nginx/snippets/authentik-forward-auth.conf;
+auth_request        /outpost.goauthentik.io/auth/nginx;
+auth_request_set    $auth_cookie $upstream_http_set_cookie;
+error_page          401 = @goauthentik_proxy_signin;
+```
+
+To bypass auth on specific locations (e.g., health checks):
+
+```nginx
+location = /healthz {
+    auth_request off;
+    return 200 "OK\n";
+}
+```
+
+**Step 3 — Reload Nginx:**
+
+```bash
+docker exec proxy-nginx nginx -t
+docker exec proxy-nginx nginx -s reload
+```
+
+### Important notes
+
+* The `/outpost.goauthentik.io` location must **not** be marked `internal` — the browser needs direct access for the login start/callback flow
+* The redirect in `@goauthentik_proxy_signin` goes to `/outpost.goauthentik.io/start` on the **same domain** (not to `auth.marin.cr`). The outpost then redirects to Authentik's login page.
+* After adding an application to the embedded outpost, you may need to restart Authentik (`docker compose restart`) for the outpost to pick it up
+* Verify the outpost is working: `curl -s -o /dev/null -w "%{http_code}" -H "Host: <domain>" -H "X-Original-URL: https://<domain>/" http://127.0.0.1:9000/outpost.goauthentik.io/auth/nginx` — should return `401` (not `404`)
+
+### Currently protected services
+
+| Service | Domain | Application | Group |
+|---------|--------|-------------|-------|
+| Cockpit | admin.marin.cr | Cockpit | cockpit-admins |
+
+---
+
 ## Current Final State (Known-Good)
 
 * Authentik server: internal on `127.0.0.1:9000` (not public)

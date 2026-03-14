@@ -2,7 +2,7 @@
 
 This document captures the **final, working setup** for running **Cockpit** on an Ubuntu host (systemd) while exposing it **only** via **https://admin.marin.cr** through an **Nginx reverse proxy running in Docker**.
 
-It also documents the **permanent fix** for the “Cockpit socket failed with Result: resources” issue that can appear after a reboot.
+It also documents the **permanent fix** for the "Cockpit socket failed with Result: resources" issue that can appear after a reboot.
 
 ---
 
@@ -12,10 +12,10 @@ It also documents the **permanent fix** for the “Cockpit socket failed with Re
 
 - **Cockpit**: installed on the **host OS** (systemd socket/service)
 - **Nginx**: runs in **Docker** as the single internet-facing entry point
-- **TLS**: Let’s Encrypt cert for `admin.marin.cr` mounted into the Nginx container
+- **TLS**: Let's Encrypt cert for `admin.marin.cr` mounted into the Nginx container
 - **Security layers**
   - Internet access: **HTTPS enforced**
-  - Nginx: **HTTP Basic Auth**
+  - Nginx: **Authentik forward auth** (SSO via https://auth.marin.cr)
   - Cockpit: **Linux user authentication**
   - Cockpit binding: **localhost only** (no public listener)
 
@@ -23,13 +23,15 @@ It also documents the **permanent fix** for the “Cockpit socket failed with Re
 
 ```
 Internet
-  ↓
+  |
 https://admin.marin.cr
-  ↓
+  |
 Nginx (Docker container, host network)
-  ↓
+  |
+auth_request -> Authentik (127.0.0.1:9000)
+  |  (authenticated)
 Reverse proxy to localhost
-  ↓
+  |
 Cockpit (systemd, 127.0.0.1:9090)
 ```
 
@@ -53,19 +55,19 @@ Running it in Docker typically requires privileged containers and breaks key fun
 `systemctl status cockpit.socket` shows something like:
 
 - **Active: failed (Result: resources)**
-- “Failed to listen on cockpit.socket …”
+- "Failed to listen on cockpit.socket ..."
 
 ### Root cause (most common in this setup)
 Cockpit was configured to bind to **an interface/IP that is not guaranteed to exist at boot**, e.g. Docker bridge `172.17.0.1` (docker0).
 
-After a reboot (or if Docker starts later than systemd), that IP may not be ready when `cockpit.socket` starts, so systemd fails the socket with a “resources” error and **does not automatically recover**.
+After a reboot (or if Docker starts later than systemd), that IP may not be ready when `cockpit.socket` starts, so systemd fails the socket with a "resources" error and **does not automatically recover**.
 
 ### Permanent solution
 Bind Cockpit to **localhost only**:
 
-- ✅ stable across reboot
-- ✅ works with Nginx in host network mode
-- ✅ reduces attack surface
+- stable across reboot
+- works with Nginx in host network mode
+- reduces attack surface
 
 ---
 
@@ -116,7 +118,7 @@ sudo systemctl restart cockpit.socket
 sudo systemctl enable cockpit.socket
 ```
 
-### 5.3 Verify it’s correct
+### 5.3 Verify it's correct
 
 Show the effective config:
 
@@ -203,26 +205,58 @@ sudo ss -lntp | grep -E ':80|:443' || true
 
 ---
 
-## 8. HTTP Basic Auth credentials (for Nginx)
+## 8. Authentik Forward Auth
 
-Install tool:
+Authentication for `admin.marin.cr` is handled by **Authentik** (https://auth.marin.cr) using the **forward auth** pattern (`auth_request` in Nginx).
 
-```bash
-sudo apt install -y apache2-utils
+### How it works
+
+1. When a user visits `https://admin.marin.cr/`, Nginx sends a subrequest to Authentik's embedded outpost at `http://127.0.0.1:9000/outpost.goauthentik.io/auth/nginx`
+2. If the user has a valid Authentik session cookie, the outpost returns `200` and the request proceeds to Cockpit
+3. If not authenticated, the outpost returns `401`, and Nginx redirects the user to `/outpost.goauthentik.io/start` on the same domain (`admin.marin.cr`)
+4. The outpost start endpoint then redirects the user to the Authentik login page at `https://auth.marin.cr`
+5. After login, Authentik redirects back to the original URL via the outpost callback
+
+**Important:** The `/outpost.goauthentik.io` location must NOT be marked `internal` in Nginx — the browser needs direct access to `/outpost.goauthentik.io/start` and `/outpost.goauthentik.io/callback` for the login flow to work.
+
+### Reusable snippet
+
+The forward auth logic lives in a shared snippet that can be included by any service:
+
+```
+/opt/infra/proxy/nginx/snippets/authentik-forward-auth.conf
 ```
 
-Create auth file:
+This snippet provides:
+- `/outpost.goauthentik.io` location for auth subrequests and browser start/callback flows
+- `@goauthentik_proxy_signin` internal redirect handler for unauthenticated users
 
-```bash
-sudo mkdir -p /opt/infra/proxy/nginx/snippets/auth
-sudo htpasswd -c /opt/infra/proxy/nginx/snippets/auth/admin.htpasswd marinoscar
-```
+### Authentik configuration (admin UI)
 
-**Important lesson learned:** The auth file must exist before container start, or you must recreate/restart the container after creating it.
+The following must be configured in the Authentik admin UI at `https://auth.marin.cr/if/admin/`:
+
+1. **Proxy Provider** named `cockpit-forward-auth` (type: Forward auth single application, external host: `https://admin.marin.cr`)
+2. **Application** named `Cockpit` linked to the provider
+3. **Embedded Outpost** must include the `Cockpit` application in its **Selected** applications list
+
+### Access control
+
+Access is restricted using group-based policies in Authentik:
+
+1. Create a group (e.g., `cockpit-admins`) in **Directory > Groups**
+2. Add authorized users to the group
+3. In **Applications > Applications > Cockpit**, go to the **Policy / Group / User Bindings** tab
+4. Bind the `cockpit-admins` group to the application
+
+Once a group binding exists, only members of that group can access `admin.marin.cr`. Users not in the group will see an "access denied" page.
+
+### User management
+
+Users are managed in the Authentik admin UI, not via htpasswd files.
 
 ---
 
-## 9. TLS certificate (Let’s Encrypt)
+## 9. TLS certificate (Let's Encrypt)
 
 Nginx serves the ACME challenge via webroot.
 
@@ -271,19 +305,13 @@ Edit:
 sudo nano /opt/infra/proxy/nginx/conf.d/50-admin.marin.cr.conf
 ```
 
-Recommended config (includes heartbeat + WebSocket support):
+Current config (Authentik forward auth + heartbeat + WebSocket support):
 
 ```nginx
 # admin.marin.cr
-# - HTTP: ACME challenge + redirect to HTTPS
-# - HTTPS: Basic Auth protected reverse proxy to Cockpit (localhost:9090)
+# - HTTP: ACME challenge + heartbeat + redirect to HTTPS
+# - HTTPS: Authentik forward auth + reverse proxy to Cockpit (host:9090)
 # - Heartbeat: unauthenticated endpoint for external uptime monitors
-
-# WebSocket helper
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    ''      close;
-}
 
 server {
     listen 80;
@@ -312,17 +340,22 @@ server {
     ssl_certificate     /etc/letsencrypt/live/admin.marin.cr/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/admin.marin.cr/privkey.pem;
 
-    auth_basic "Restricted Admin Access";
-    auth_basic_user_file /etc/nginx/snippets/auth/admin.htpasswd;
+    # Authentik forward auth (replaces Basic Auth)
+    include /etc/nginx/snippets/authentik-forward-auth.conf;
+    auth_request        /outpost.goauthentik.io/auth/nginx;
+    auth_request_set    $auth_cookie $upstream_http_set_cookie;
+    error_page          401 = @goauthentik_proxy_signin;
 
+    # Heartbeat — bypass Authentik auth
     location = /heartbeat {
-        auth_basic off;
+        auth_request off;
         access_log off;
         add_header Content-Type text/plain;
         add_header Cache-Control "no-store";
         return 200 "OK\n";
     }
 
+    # Proxy to Cockpit on the host
     location / {
         proxy_http_version 1.1;
 
@@ -331,20 +364,14 @@ server {
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
+        # WebSockets (Cockpit uses them)
         proxy_set_header Upgrade           $http_upgrade;
-        proxy_set_header Connection        $connection_upgrade;
-
-        # Cockpit uses long-lived WebSockets; reduce random disconnects
+        proxy_set_header Connection        "upgrade";
         proxy_read_timeout 1h;
         proxy_send_timeout 1h;
         proxy_buffering off;
 
-        # Option A (recommended): proxy to Cockpit over HTTPS (self-signed on localhost)
-        proxy_pass https://127.0.0.1:9090;
-        proxy_ssl_verify off;
-
-        # Option B: if you KNOW your Cockpit is plain HTTP (less common), use:
-        # proxy_pass http://127.0.0.1:9090;
+        proxy_pass http://127.0.0.1:9090;
     }
 }
 ```
@@ -372,7 +399,7 @@ sudo docker exec proxy-nginx nginx -t
 sudo docker exec proxy-nginx nginx -s reload
 ```
 
-### 11.3 If you’re using docker compose and need the right directory
+### 11.3 If you're using docker compose and need the right directory
 From the folder that contains your compose file:
 
 ```bash
@@ -412,11 +439,11 @@ Expected:
 - Admin UI requires auth:
 
 ```bash
-curl -i https://admin.marin.cr/
+curl -s -o /dev/null -w "%{http_code}" https://admin.marin.cr/
 ```
 
 Expected:
-- `401 Unauthorized` (or a Basic Auth prompt in the browser)
+- `302` redirect to `https://auth.marin.cr/outpost.goauthentik.io/start?rd=...`
 
 ---
 
@@ -429,7 +456,7 @@ sudo systemctl restart cockpit.socket
 sudo systemctl status cockpit.socket --no-pager
 ```
 
-### Check what it’s actually listening on
+### Check what it's actually listening on
 ```bash
 sudo ss -lntp | grep 9090 || true
 ```
@@ -445,10 +472,21 @@ sudo docker exec proxy-nginx nginx -t
 sudo docker exec proxy-nginx nginx -s reload
 ```
 
+### Authentik outpost not responding (404 on auth endpoint)
+
+If `curl -s -o /dev/null -w "%{http_code}" -H "Host: admin.marin.cr" -H "X-Original-URL: https://admin.marin.cr/" http://127.0.0.1:9000/outpost.goauthentik.io/auth/nginx` returns `404`:
+
+1. Open Authentik admin UI at `https://auth.marin.cr/if/admin/`
+2. Go to **Applications > Outposts**
+3. Edit the **authentik Embedded Outpost**
+4. Ensure the `Cockpit` application is in the **Selected** column
+5. Save and restart Authentik: `docker compose restart`
+
 ### Logs
 ```bash
 sudo journalctl -u cockpit.socket -u cockpit.service --no-pager -n 200
 sudo docker logs --tail 200 proxy-nginx
+sudo docker logs --tail 50 infra-authentik-server
 ```
 
 ---
@@ -456,20 +494,23 @@ sudo docker logs --tail 200 proxy-nginx
 ## 14. Risks and security notes
 
 ### Binding Cockpit to localhost only
-**Risk:** You can’t access Cockpit directly via `https://server-ip:9090/` anymore.  
-**Benefit:** This is exactly what you want—Cockpit is reachable **only** through your authenticated reverse proxy.
+**Risk:** You can't access Cockpit directly via `https://server-ip:9090/` anymore.
+**Benefit:** This is exactly what you want -- Cockpit is reachable **only** through your authenticated reverse proxy.
 
 ### Reverse proxying to Cockpit over HTTPS with `proxy_ssl_verify off`
-- Nginx → Cockpit on localhost uses a **self-signed** cert by default.
+- Nginx to Cockpit on localhost uses a **self-signed** cert by default.
 - Disabling verification is acceptable here because:
   - traffic never leaves the host network stack
   - Cockpit is not exposed publicly
   - the threat model for MITM on localhost is extremely low
 
-If you want stricter verification, you can pin Cockpit’s cert/CA and enable verify, but it’s more work and usually not worth it for localhost-only.
+If you want stricter verification, you can pin Cockpit's cert/CA and enable verify, but it's more work and usually not worth it for localhost-only.
 
-### Double-auth (Basic Auth + Cockpit login)
-This is good defense-in-depth. The main tradeoff is user convenience (two prompts).
+### Double-auth (Authentik SSO + Cockpit login)
+This is good defense-in-depth. Users first authenticate via Authentik (SSO) and then log in to Cockpit with their Linux credentials. The main tradeoff is user convenience (two login steps), but both layers serve different purposes: Authentik controls **who can reach Cockpit**, while Cockpit controls **what they can do on the system**.
+
+### Authentik availability
+If Authentik is down, the `auth_request` will fail and Nginx will return `500` for all requests to `admin.marin.cr` (except `/heartbeat`, which bypasses auth). To restore access without Authentik, temporarily replace the forward auth directives with `auth_basic` and reload Nginx.
 
 ### Reboot resilience
 The permanent fix is: **do not bind Cockpit to docker0/bridge IPs**. Localhost binding avoids boot ordering issues between systemd and Docker/network availability.
