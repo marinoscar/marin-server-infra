@@ -56,6 +56,8 @@ The setup is designed to scale to multiple self-hosted applications with consist
 | Authentik | 127.0.0.1:9000 | https://auth.marin.cr | `docs/authentik-setup.md` |
 | Knecta Web | 127.0.0.1:3101 | https://knecta.marin.cr | `docs/knecta-setup.md` |
 | Knecta API | 127.0.0.1:3100 | https://knecta.marin.cr/api | `docs/knecta-setup.md` |
+| Mattermost | 127.0.0.1:8065 | https://team.marin.cr | `docs/mattermost-setup.md` |
+| CrowdSec | 127.0.0.1:8080 (LAPI) | Host service (systemd) | `docs/crowdsec-setup.md` |
 
 All applications (except PostgreSQL) bind to localhost only and are accessed through the Nginx reverse proxy with TLS.
 
@@ -170,6 +172,7 @@ Root folder:
   apps/          # Application stacks (each app has its own folder)
     marinapp/    # Custom full-stack application
     nextcloud/   # File synchronization service
+    mattermost/  # Team messaging platform
     n8n/         # Workflow automation platform
     postgres/    # PostgreSQL + pgAdmin
   proxy/         # Reverse proxy stack (Nginx) + TLS assets

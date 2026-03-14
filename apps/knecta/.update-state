@@ -1,0 +1,8 @@
+# Knecta Update State — written by update.sh, read by rollback.sh
+# 2026-03-02T03:13:18Z
+UPDATE_TIMESTAMP="2026-03-02T03:13:18Z"
+FROM_COMMIT="38bcf2b"
+FROM_COMMIT_FULL="38bcf2b4d3938e9ec3b0691bd7c5c795f0a94040"
+TO_COMMIT="e9c39a7"
+TO_COMMIT_FULL="e9c39a7c439306c1d507478dda326e8fb4c906ca"
+MIGRATIONS_ADDED="20260223000000_add_spreadsheet_agent 20260223100000_add_web_search_to_data_chats 20260224000000_add_data_imports 20260224000000_remove_spreadsheet_agent 20260224010000_add_import_level_connection"

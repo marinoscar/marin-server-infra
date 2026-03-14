@@ -85,6 +85,7 @@ These preferences are documented in `docs/server-setup.md`:
 | pgAdmin | 5050 | pgadmin.marin.cr |
 | Cockpit | 9090 | admin.marin.cr |
 | Portainer | 9005 | portainer.marin.cr |
+| Mattermost | 8065 | team.marin.cr |
 | PostgreSQL | 5432 | Direct (no proxy) |
 
 ## Verification Commands
@@ -114,3 +115,4 @@ Detailed runbooks are in `docs/`:
 - `cockpit-setup.md` - Admin UI with Basic Auth
 - `portainer-setup.md` - Docker management UI with Authentik OAuth
 - `certificate-renewal-setup.md` - TLS automation
+- `crowdsec-setup.md` - Intrusion detection and prevention (host-level)

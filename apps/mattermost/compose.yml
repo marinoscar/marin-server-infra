@@ -1,0 +1,18 @@
+services:
+  mattermost:
+    image: mattermost/mattermost-team-edition:latest
+    container_name: infra-mattermost
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8065:8065"
+    env_file:
+      - .env
+    volumes:
+      - ./config:/mattermost/config
+      - ./data:/mattermost/data
+      - ./logs:/mattermost/logs
+
+networks:
+  default:
+    name: proxy
+    external: true

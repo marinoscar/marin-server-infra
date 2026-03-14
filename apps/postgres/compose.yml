@@ -11,6 +11,8 @@ services:
       postgres
       -c listen_addresses=*
       -c password_encryption=scram-sha-256
+      -c log_line_prefix='%m [%p] [%h] '
+      -c log_connections=on
     ports:
       - "5432:5432"
     volumes:

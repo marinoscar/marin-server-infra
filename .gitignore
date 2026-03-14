@@ -44,3 +44,10 @@ apps/boringproxy/src
 apps/postgres/data-pg16-backup
 
 /.claude
+
+# Nginx logs (written to host for CrowdSec)
+proxy/nginx/logs/
+
+# Mattermost
+apps/mattermost/config/
+apps/mattermost/logs/

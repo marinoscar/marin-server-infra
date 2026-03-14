@@ -12,6 +12,9 @@
 #   5. Updates VPS proxy config if changed
 #   6. Verifies service health
 #
+# After each update, writes .update-state with commit and migration info.
+# Use rollback.sh to revert to the previous version (including migrations).
+#
 # Usage:
 #   cd /opt/infra/apps/knecta
 #   ./update.sh              # Standard update
@@ -102,6 +105,10 @@ set +a
 CURRENT_COMMIT=$(cd "${REPO_DIR}" && git rev-parse --short HEAD)
 log "Current version: ${CURRENT_COMMIT}"
 
+# Capture current migration list (for rollback state)
+MIGRATIONS_BEFORE=$(ls -1 "${REPO_DIR}/apps/api/prisma/migrations/" 2>/dev/null \
+    | grep -v migration_lock.toml | sort || true)
+
 # -----------------------------------------------
 # Step 1: Pull latest code
 # -----------------------------------------------
@@ -138,6 +145,25 @@ git reset --hard "origin/${BRANCH}"
 cd "${KNECTA_DIR}"
 log ""
 log "  Code updated to ${NEW_COMMIT}."
+
+# Detect new migrations and save update state for rollback.sh
+MIGRATIONS_AFTER=$(ls -1 "${REPO_DIR}/apps/api/prisma/migrations/" 2>/dev/null \
+    | grep -v migration_lock.toml | sort || true)
+MIGRATIONS_ADDED=$(comm -23 <(echo "${MIGRATIONS_AFTER}") <(echo "${MIGRATIONS_BEFORE}") \
+    | tr '\n' ' ' | sed 's/ $//')
+
+STATE_FILE="${KNECTA_DIR}/.update-state"
+cat > "${STATE_FILE}" <<STATEEOF
+# Knecta Update State — written by update.sh, read by rollback.sh
+# $(date -u +%Y-%m-%dT%H:%M:%SZ)
+UPDATE_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+FROM_COMMIT="${CURRENT_COMMIT}"
+FROM_COMMIT_FULL="${LOCAL_HEAD}"
+TO_COMMIT="${NEW_COMMIT}"
+TO_COMMIT_FULL="${REMOTE_HEAD}"
+MIGRATIONS_ADDED="${MIGRATIONS_ADDED}"
+STATEEOF
+log "  Update state saved to .update-state"
 
 # -----------------------------------------------
 # Step 2: Rebuild Docker images
@@ -187,8 +213,7 @@ if [ "${API_READY}" = "false" ]; then
     log "  WARNING: API health check did not pass within 120 seconds."
     log "  Check logs: docker compose logs api"
     log ""
-    log "  To rollback: git -C ${REPO_DIR} reset --hard ${CURRENT_COMMIT}"
-    log "               docker compose build && docker compose up -d"
+    log "  To rollback: ./rollback.sh"
 fi
 
 # -----------------------------------------------
@@ -271,7 +296,7 @@ log " URL:      https://knecta.marin.cr"
 log ""
 log " If something went wrong, rollback with:"
 log "   cd ${KNECTA_DIR}"
-log "   git -C repo reset --hard ${CURRENT_COMMIT}"
-log "   docker compose build && docker compose up -d"
+log "   ./rollback.sh               # rollback to previous version"
+log "   ./rollback.sh <commit>      # rollback to specific commit"
 log ""
 log "============================================"
