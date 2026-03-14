@@ -116,3 +116,7 @@ Detailed runbooks are in `docs/`:
 - `portainer-setup.md` - Docker management UI with Authentik OAuth
 - `certificate-renewal-setup.md` - TLS automation
 - `crowdsec-setup.md` - Intrusion detection and prevention (host-level)
+
+## SERVER.md Maintenance
+
+`SERVER.md` is the user-facing landing page listing all installed apps with descriptions and access links. **When adding or removing an app/service, update `SERVER.md` accordingly** to keep it in sync with the Services & Domains table above.
