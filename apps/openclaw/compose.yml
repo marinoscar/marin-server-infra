@@ -1,0 +1,11 @@
+services:
+  ssh:
+    build: .
+    container_name: openclaw-ssh
+    restart: unless-stopped
+    ports:
+      - "2222:22"
+    env_file: .env
+    volumes:
+      - ./data/home:/home/openclaw
+      - ./authorized_keys:/tmp/authorized_keys:ro
