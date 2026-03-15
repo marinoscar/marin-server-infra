@@ -11,5 +11,6 @@ Quick reference for all applications running on this server.
 | 🐳 | **Portainer** | Docker container management UI | [portainer.marin.cr](https://portainer.marin.cr) |
 | 🧠 | **Knecta** | Knowledge management platform (React frontend + NestJS API + Neo4j) | [knecta.marin.cr](https://knecta.marin.cr) |
 | 💬 | **Mattermost** | Team messaging and collaboration platform | [team.marin.cr](https://team.marin.cr) |
+| 🤖 | **LibreChat** | AI chat interface supporting multiple providers (bring your own API keys) | [chat.marin.cr](https://chat.marin.cr) |
 | 🛡️ | **CrowdSec** | Intrusion detection and prevention system (host-level, no web UI) | — |
 | 🗄️ | **PostgreSQL** | Relational database server (direct access on port 5432, no web UI) | — |

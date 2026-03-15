@@ -86,6 +86,7 @@ These preferences are documented in `docs/server-setup.md`:
 | Cockpit | 9090 | admin.marin.cr |
 | Portainer | 9005 | portainer.marin.cr |
 | Mattermost | 8065 | team.marin.cr |
+| LibreChat | 3080 | chat.marin.cr |
 | PostgreSQL | 5432 | Direct (no proxy) |
 
 ## Verification Commands
@@ -116,6 +117,7 @@ Detailed runbooks are in `docs/`:
 - `portainer-setup.md` - Docker management UI with Authentik OAuth
 - `certificate-renewal-setup.md` - TLS automation
 - `crowdsec-setup.md` - Intrusion detection and prevention (host-level)
+- `librechat-setup.md` - AI chat interface with multi-provider support
 
 ## SERVER.md Maintenance
 

@@ -1,0 +1,108 @@
+# =============================================================================
+# LibreChat - AI Chat Interface
+# =============================================================================
+# Location: /opt/infra/apps/librechat/compose.yml
+#
+# Services:
+#   api        - LibreChat application (port 3080)
+#   mongodb    - Document database
+#   meilisearch - Search engine
+#   vectordb   - PostgreSQL + pgvector (RAG embeddings)
+#   rag_api    - RAG API service
+# =============================================================================
+
+services:
+  api:
+    image: registry.librechat.ai/danny-avila/librechat:latest
+    container_name: infra-librechat
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3080:${PORT}"
+    depends_on:
+      - mongodb
+      - rag_api
+    user: "${UID}:${GID}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - HOST=0.0.0.0
+      - MONGO_URI=mongodb://mongodb:27017/LibreChat
+      - MEILI_HOST=http://meilisearch:7700
+      - RAG_PORT=${RAG_PORT:-8000}
+      - RAG_API_URL=http://rag_api:${RAG_PORT:-8000}
+    env_file:
+      - .env
+    volumes:
+      - type: bind
+        source: ./.env
+        target: /app/.env
+      - type: bind
+        source: ./librechat.yaml
+        target: /app/librechat.yaml
+      - ./images:/app/client/public/images
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+    networks:
+      - default
+      - proxy
+
+  mongodb:
+    image: mongo:8.0
+    container_name: infra-librechat-mongo
+    restart: unless-stopped
+    user: "${UID}:${GID}"
+    volumes:
+      - ./data-mongo:/data/db
+    command: mongod --noauth
+    networks:
+      - default
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.35.1
+    container_name: infra-librechat-meili
+    restart: unless-stopped
+    user: "${UID}:${GID}"
+    environment:
+      - MEILI_HOST=http://meilisearch:7700
+      - MEILI_NO_ANALYTICS=true
+      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY}
+    volumes:
+      - ./data-meili:/meili_data
+    networks:
+      - default
+
+  vectordb:
+    image: pgvector/pgvector:0.8.0-pg15-trixie
+    container_name: infra-librechat-vectordb
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-vectordb}
+      POSTGRES_USER: ${POSTGRES_USER:-librechat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - default
+
+  rag_api:
+    image: registry.librechat.ai/danny-avila/librechat-rag-api-dev-lite:latest
+    container_name: infra-librechat-rag
+    restart: unless-stopped
+    depends_on:
+      - vectordb
+    environment:
+      - DB_HOST=vectordb
+      - RAG_PORT=${RAG_PORT:-8000}
+    env_file:
+      - .env
+    networks:
+      - default
+
+networks:
+  default:
+    name: librechat-internal
+  proxy:
+    external: true
+
+volumes:
+  pgdata:

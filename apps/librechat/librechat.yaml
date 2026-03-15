@@ -1,0 +1,5 @@
+version: 1.2.1
+cache: true
+fileStrategy: "s3"
+registration:
+  socialLogins: []
