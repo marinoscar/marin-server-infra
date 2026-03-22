@@ -172,8 +172,21 @@ log "[3/6] Running database migrations..."
 # Stop the API to run migrations cleanly, then restart
 docker compose -f "${COMPOSE_FILE}" stop api 2>/dev/null || true
 
-docker compose -f "${COMPOSE_FILE}" run --rm -T api sh -c \
-    "npx prisma migrate deploy 2>&1 || echo 'Schema already up to date'" \
+# Source .env to get database connection parameters
+set -a
+. "${SHELLKEEP_DIR}/.env"
+set +a
+
+# URL-encode the password (handles special characters like ! @ # etc.)
+ENCODED_PW=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${POSTGRES_PASSWORD}', safe=''))")
+
+DATABASE_URL="postgresql://${POSTGRES_USER}:${ENCODED_PW}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
+if [ "${POSTGRES_SSL}" = "true" ]; then
+    DATABASE_URL="${DATABASE_URL}?sslmode=require"
+fi
+
+docker compose -f "${COMPOSE_FILE}" run --rm -T -e DATABASE_URL="${DATABASE_URL}" api sh -c \
+    "npx prisma migrate deploy 2>&1" \
     | while IFS= read -r line; do log "    ${line}"; done
 
 log "  Migrations complete."
