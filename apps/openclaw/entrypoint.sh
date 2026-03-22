@@ -21,6 +21,6 @@ fi
 # Start OpenClaw gateway in background as openclaw user
 mkdir -p /tmp/openclaw
 chown openclaw:openclaw /tmp/openclaw
-su - openclaw -c 'export PATH="/home/openclaw/.npm-global/bin:$PATH" && openclaw gateway --port 18789 --bind lan >> /tmp/openclaw/gateway.log 2>&1 &'
+su - openclaw -c 'export PATH="/home/openclaw/.npm-global/bin:$PATH" && nohup openclaw gateway --port 18789 --bind loopback >> /tmp/openclaw/gateway.log 2>&1 &'
 
 exec /usr/sbin/sshd -D -e
