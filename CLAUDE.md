@@ -87,6 +87,7 @@ These preferences are documented in `docs/server-setup.md`:
 | Portainer | 9005 | portainer.marin.cr |
 | Mattermost | 8065 | team.marin.cr |
 | LibreChat | 3080 | chat.marin.cr |
+| ShellKeep | 8323 | shellkeep.marin.cr |
 | OpenClaw SSH | 2222 (SSH) | openclaw.marin.cr |
 | PostgreSQL | 5432 | Direct (no proxy) |
 

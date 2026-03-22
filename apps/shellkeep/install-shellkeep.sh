@@ -144,7 +144,6 @@ services:
     restart: unless-stopped
     networks:
       - shellkeep-internal
-      - proxy
 
   # ---------------------------------------------------------------------------
   # API — NestJS Backend (Fastify) with SSH/tmux terminal management
@@ -190,10 +189,6 @@ networks:
   # Internal network for service-to-service communication
   shellkeep-internal:
     driver: bridge
-
-  # Shared VPS proxy network (external, created by /opt/infra/proxy)
-  proxy:
-    external: true
 COMPOSE_EOF
 
 log "  compose.yml generated."
@@ -226,7 +221,7 @@ server {
 
     # Terminal WebSocket — long-lived connections for SSH sessions
     location /api/terminal/ws {
-        proxy_pass http://shellkeep-nginx;
+        proxy_pass http://127.0.0.1:${HOST_PORT};
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -242,7 +237,7 @@ server {
 
     # API routes
     location /api {
-        proxy_pass http://shellkeep-nginx;
+        proxy_pass http://127.0.0.1:${HOST_PORT};
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -255,7 +250,7 @@ server {
 
     # Frontend (React SPA)
     location / {
-        proxy_pass http://shellkeep-nginx;
+        proxy_pass http://127.0.0.1:${HOST_PORT};
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -313,6 +308,13 @@ docker compose run --rm -T -e DATABASE_URL="${DATABASE_URL}" api sh -c \
     "npx prisma migrate deploy"
 
 log "  Migrations complete."
+
+log "  Running database seeds..."
+
+docker compose run --rm -T -e DATABASE_URL="${DATABASE_URL}" -e INITIAL_ADMIN_EMAIL="${INITIAL_ADMIN_EMAIL}" api sh -c \
+    "npx prisma db seed"
+
+log "  Seeds complete."
 
 # ---------------------------------------------------------------------------
 # Step 6: Start all services

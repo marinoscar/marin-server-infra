@@ -22,7 +22,6 @@ services:
     restart: unless-stopped
     networks:
       - shellkeep-internal
-      - proxy
 
   # ---------------------------------------------------------------------------
   # API — NestJS Backend (Fastify) with SSH/tmux terminal management
@@ -68,7 +67,3 @@ networks:
   # Internal network for service-to-service communication
   shellkeep-internal:
     driver: bridge
-
-  # Shared VPS proxy network (external, created by /opt/infra/proxy)
-  proxy:
-    external: true

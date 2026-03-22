@@ -13,6 +13,7 @@ Quick reference for all applications running on this server.
 | 💬 | **Mattermost** | Team messaging and collaboration platform | [team.marin.cr](https://team.marin.cr) |
 | 🤖 | **LibreChat** | AI chat interface supporting multiple providers (bring your own API keys) | [chat.marin.cr](https://chat.marin.cr) |
 | 📋 | **Clipboard** | Universal clipboard for sharing text, files, and media across devices | [clipboard.marin.cr](https://clipboard.marin.cr) |
+| 🐚 | **ShellKeep** | SSH connection manager and web terminal (React + NestJS) | [shellkeep.marin.cr](https://shellkeep.marin.cr) |
 | 🦞 | **OpenClaw** | AI assistant dev container (SSH access, Node.js 24 + pnpm) | `ssh -p 2222 openclaw@openclaw.marin.cr` |
 | 🛡️ | **CrowdSec** | Intrusion detection and prevention system (host-level, no web UI) | — |
 | 🗄️ | **PostgreSQL** | Relational database server (direct access on port 5432, no web UI) | — |
