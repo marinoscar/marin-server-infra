@@ -115,8 +115,9 @@ The script will:
 3. Generate `compose.yml` and `shellkeep.conf`
 4. Build Docker images (production targets)
 5. Run Prisma migrations against PostgreSQL
-6. Start all services (api, web, nginx)
-7. Verify service health
+6. Run database seeds (roles, permissions, system settings, admin allowlist)
+7. Start all services (api, web, nginx)
+8. Verify service health
 
 ## Step 4: Configure VPS Reverse Proxy
 
@@ -126,14 +127,9 @@ Copy the Nginx config to the VPS proxy:
 cp /opt/infra/apps/shellkeep/shellkeep.conf /opt/infra/proxy/nginx/conf.d/
 ```
 
-Validate and reload:
-
-```bash
-docker exec proxy-nginx nginx -t
-docker exec proxy-nginx nginx -s reload
-```
-
 ## Step 5: Issue TLS Certificate
+
+The proxy config references TLS certs, so issue the certificate **before** reloading Nginx:
 
 ```bash
 certbot certonly \
@@ -143,9 +139,10 @@ certbot certonly \
   --config-dir /opt/infra/proxy/letsencrypt
 ```
 
-Reload the proxy after certificate issuance:
+Now validate and reload the proxy:
 
 ```bash
+docker exec proxy-nginx nginx -t
 docker exec proxy-nginx nginx -s reload
 ```
 
@@ -213,11 +210,20 @@ docker exec shellkeep-api sh -c 'wget -qO- http://localhost:3000/api/health/read
 Check that `POSTGRES_HOST` in `.env` is the correct cloud PostgreSQL hostname and that `POSTGRES_SSL=true` is set. Ensure the cloud provider's firewall allows connections from the VPS IP address.
 
 ### Migration errors
-Stop the API before running migrations manually:
+Stop the API before running migrations manually. You must construct `DATABASE_URL` from the `.env` parameters — Prisma does not read individual `POSTGRES_*` vars. URL-encode the password if it contains special characters (`!`, `@`, `#`, etc.):
 ```bash
 docker compose -f /opt/infra/apps/shellkeep/compose.yml stop api
-docker compose -f /opt/infra/apps/shellkeep/compose.yml run --rm api npx prisma migrate deploy
+
+# Construct DATABASE_URL from .env (adjust password encoding as needed)
+DATABASE_URL="postgresql://USER:PASSWORD@HOST:5432/shellkeep"
+docker compose -f /opt/infra/apps/shellkeep/compose.yml run --rm -e DATABASE_URL="${DATABASE_URL}" api npx prisma migrate deploy
+
 docker compose -f /opt/infra/apps/shellkeep/compose.yml start api
+```
+
+To re-run seeds (roles, permissions, admin allowlist):
+```bash
+docker compose -f /opt/infra/apps/shellkeep/compose.yml run --rm -e DATABASE_URL="${DATABASE_URL}" api npx prisma db seed
 ```
 
 ### OAuth callback error
