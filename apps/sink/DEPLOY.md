@@ -4,7 +4,7 @@ This document describes how to deploy and maintain the Sink application on the V
 
 ## Overview
 
-- **Public URL**: https://sink.dev.marin.cr
+- **Public URL**: https://sink.marin.cr
 - **VPS app path**: /opt/infra/apps/sink/
 - **Repository**: https://github.com/marinoscar/sink.git
 - **Internal port**: 127.0.0.1:8321 (Sink Nginx container, reached by the VPS proxy)
@@ -17,7 +17,7 @@ Internet (HTTPS)
   v
 VPS Nginx Proxy (proxy-nginx, ports 80/443)
   |
-  v  sink.dev.marin.cr -> 127.0.0.1:8321
+  v  sink.marin.cr -> 127.0.0.1:8321
 Sink Nginx (sink-nginx, port 8321)
   |-- /api              -> sink-api:3000  (NestJS + Fastify)
   +-- /                 -> sink-web:80    (React static build)
@@ -26,7 +26,7 @@ sink-api -> PostgreSQL (via POSTGRES_HOST, supports SSL)
          -> AWS S3 (file storage)
 ```
 
-The VPS proxy handles TLS termination using the wildcard certificate for `*.dev.marin.cr`. Traffic for `sink.dev.marin.cr` is forwarded to the Sink Nginx container, which routes between the API and the static web frontend.
+The VPS proxy handles TLS termination using a dedicated Let's Encrypt certificate for `sink.marin.cr`. Traffic for `sink.marin.cr` is forwarded to the Sink Nginx container, which routes between the API and the static web frontend.
 
 ---
 
@@ -36,11 +36,11 @@ Before starting the deployment, confirm the following are in place:
 
 1. **Ubuntu VPS** with Docker and Docker Compose installed
 2. **VPS reverse proxy** running at `/opt/infra/proxy/` (the `proxy-nginx` container)
-3. **DNS** — wildcard A record `*.dev.marin.cr` already pointing to the VPS IP
-4. **Wildcard TLS certificate** for `*.dev.marin.cr` already provisioned at `/etc/letsencrypt/live/dev.marin.cr/` (no new cert needed)
+3. **DNS** — A record for `sink.marin.cr` pointing to the VPS IP
+4. **TLS certificate** — issued via Let's Encrypt for `sink.marin.cr` (see "SSL Certificate" section below). Stored at `/etc/letsencrypt/live/sink.marin.cr/`
 5. **PostgreSQL instance** accessible from the VPS (e.g., pgadmin.marin.cr or a cloud provider) with connection credentials ready
 6. **Google OAuth credentials** with the redirect URI configured:
-   `https://sink.dev.marin.cr/api/auth/google/callback`
+   `https://sink.marin.cr/api/auth/google/callback`
 7. **AWS S3 bucket** created with IAM credentials that have read/write access
 
 ---
@@ -73,7 +73,7 @@ Use the following template, replacing all placeholder values:
 COMPOSE_PROJECT_NAME=sink
 NODE_ENV=production
 PORT=3000
-APP_URL=https://sink.dev.marin.cr
+APP_URL=https://sink.marin.cr
 
 # Database (PostgreSQL)
 # DATABASE_URL is constructed automatically from these values at runtime.
@@ -93,10 +93,10 @@ JWT_REFRESH_TTL_DAYS=14
 COOKIE_SECRET=your-cookie-secret-min-32-chars
 
 # OAuth - Google (Required)
-# Redirect URI must be: https://sink.dev.marin.cr/api/auth/google/callback
+# Redirect URI must be: https://sink.marin.cr/api/auth/google/callback
 GOOGLE_CLIENT_ID=your-google-client-id
 GOOGLE_CLIENT_SECRET=your-google-client-secret
-GOOGLE_CALLBACK_URL=https://sink.dev.marin.cr/api/auth/google/callback
+GOOGLE_CALLBACK_URL=https://sink.marin.cr/api/auth/google/callback
 
 # Initial Admin Bootstrap
 # First user to log in with this email is assigned the Admin role
@@ -152,7 +152,55 @@ cd /opt/infra/apps/sink
 
 The script runs in 7 steps and prints progress for each. If it exits with an error, the output will indicate which step failed and what to check.
 
-### Step 4 — Install the VPS proxy config
+### Step 4 — Issue the SSL certificate
+
+Before the proxy config can serve HTTPS, a Let's Encrypt certificate must exist for `sink.marin.cr`. The certificate is issued using the webroot method through the VPS proxy.
+
+First, place a temporary HTTP-only config so certbot can reach the ACME challenge endpoint:
+
+```bash
+cat > /opt/infra/proxy/nginx/conf.d/sink.conf << 'TEMPEOF'
+server {
+    listen 80;
+    server_name sink.marin.cr;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 503 "Certificate pending";
+    }
+}
+TEMPEOF
+
+docker exec proxy-nginx nginx -t
+docker exec proxy-nginx nginx -s reload
+```
+
+Then issue the certificate:
+
+```bash
+docker run --rm \
+  -v /opt/infra/proxy/letsencrypt:/etc/letsencrypt \
+  -v /opt/infra/proxy/webroot:/var/www/certbot \
+  certbot/certbot:latest certonly \
+    --webroot -w /var/www/certbot \
+    -d sink.marin.cr \
+    --non-interactive \
+    --agree-tos \
+    --email oscar@marin.cr
+```
+
+Verify the certificate was created:
+
+```bash
+ls /opt/infra/proxy/letsencrypt/live/sink.marin.cr/
+```
+
+You should see `fullchain.pem`, `privkey.pem`, and related files. The certificate renews automatically via the `renew-all-certs.sh` cron job at `/opt/infra/shared/renew-all-certs.sh`.
+
+### Step 5 — Install the VPS proxy config
 
 The install script generates `sink.conf` at `/opt/infra/apps/sink/sink.conf`. Copy it into the VPS proxy's config directory:
 
@@ -160,7 +208,7 @@ The install script generates `sink.conf` at `/opt/infra/apps/sink/sink.conf`. Co
 cp /opt/infra/apps/sink/sink.conf /opt/infra/proxy/nginx/conf.d/sink.conf
 ```
 
-### Step 5 — Validate and reload the VPS proxy
+### Step 6 — Validate and reload the VPS proxy
 
 ```bash
 docker exec proxy-nginx nginx -t
@@ -169,10 +217,10 @@ docker exec proxy-nginx nginx -s reload
 
 If `nginx -t` reports a syntax error, review the contents of `sink.conf` before reloading.
 
-### Step 6 — Verify
+### Step 7 — Verify
 
 ```bash
-curl https://sink.dev.marin.cr/api/health/live
+curl https://sink.marin.cr/api/health/live
 ```
 
 Expected response: `{"status":"ok"}` or similar. A 200 response confirms TLS, the VPS proxy, the Sink Nginx router, and the API container are all working.
@@ -359,8 +407,8 @@ Then run the migration one-off container as shown in the Database section above.
 If Google OAuth returns an error after login:
 
 1. Confirm `GOOGLE_CALLBACK_URL` in `.env` matches exactly what is registered in the Google Cloud Console:
-   `https://sink.dev.marin.cr/api/auth/google/callback`
-2. Confirm `APP_URL=https://sink.dev.marin.cr` in `.env`.
+   `https://sink.marin.cr/api/auth/google/callback`
+2. Confirm `APP_URL=https://sink.marin.cr` in `.env`.
 3. Restart the API container after any `.env` change:
    ```bash
    docker compose -f /opt/infra/apps/sink/compose.yml restart api
