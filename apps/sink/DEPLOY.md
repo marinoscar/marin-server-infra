@@ -138,7 +138,16 @@ openssl rand -hex 32   # CALENDAR_ENCRYPTION_KEY
 
 ### Step 3 — Run the install script
 
-Copy the install script from the repository and run it. The script clones the repository, validates the `.env` file, generates the production `compose.yml` and the VPS proxy config (`sink.conf`), builds the Docker images, runs Prisma migrations, runs seeds, and starts all services.
+Copy the install script from the repository and run it. The script handles the entire deployment end-to-end:
+
+1. Clones the Sink repository
+2. Validates the `.env` file
+3. Generates production `compose.yml` and nginx proxy config
+4. Builds Docker images and runs Prisma migrations + seeds
+5. Starts all services
+6. Issues a Let's Encrypt SSL certificate (if not already present)
+7. Installs the proxy config and reloads the VPS nginx proxy
+8. Verifies internal API health and public HTTPS access
 
 ```bash
 # Fetch the script directly from the repository
@@ -150,35 +159,29 @@ cd /opt/infra/apps/sink
 ./install-sink.sh
 ```
 
-The script runs in 7 steps and prints progress for each. If it exits with an error, the output will indicate which step failed and what to check.
+The script runs in 9 steps and prints progress for each. If it exits with an error, the output will indicate which step failed and what to check.
 
-### Step 4 — Issue the SSL certificate
+### Step 4 — Configure Google OAuth
 
-Before the proxy config can serve HTTPS, a Let's Encrypt certificate must exist for `sink.marin.cr`. The certificate is issued using the webroot method through the VPS proxy.
+The only remaining manual step after the installer finishes is to configure the Google OAuth redirect URI in the Google Cloud Console:
 
-First, place a temporary HTTP-only config so certbot can reach the ACME challenge endpoint:
-
-```bash
-cat > /opt/infra/proxy/nginx/conf.d/sink.conf << 'TEMPEOF'
-server {
-    listen 80;
-    server_name sink.marin.cr;
-
-    location /.well-known/acme-challenge/ {
-        root /var/www/certbot;
-    }
-
-    location / {
-        return 503 "Certificate pending";
-    }
-}
-TEMPEOF
-
-docker exec proxy-nginx nginx -t
-docker exec proxy-nginx nginx -s reload
+```
+https://sink.marin.cr/api/auth/google/callback
 ```
 
-Then issue the certificate:
+### Step 5 — Verify
+
+```bash
+curl https://sink.marin.cr/api/health/live
+```
+
+Expected response: `{"status":"ok"}` or similar. A 200 response confirms TLS, the VPS proxy, the Sink Nginx router, and the API container are all working.
+
+### SSL Certificate (reference)
+
+The install script issues a dedicated Let's Encrypt certificate for `sink.marin.cr` using the certbot webroot method. The certificate is stored at `/opt/infra/proxy/letsencrypt/live/sink.marin.cr/` and renews automatically via the `renew-all-certs.sh` cron job at `/opt/infra/shared/renew-all-certs.sh`.
+
+If you ever need to re-issue the certificate manually:
 
 ```bash
 docker run --rm \
@@ -191,39 +194,6 @@ docker run --rm \
     --agree-tos \
     --email oscar@marin.cr
 ```
-
-Verify the certificate was created:
-
-```bash
-ls /opt/infra/proxy/letsencrypt/live/sink.marin.cr/
-```
-
-You should see `fullchain.pem`, `privkey.pem`, and related files. The certificate renews automatically via the `renew-all-certs.sh` cron job at `/opt/infra/shared/renew-all-certs.sh`.
-
-### Step 5 — Install the VPS proxy config
-
-The install script generates `sink.conf` at `/opt/infra/apps/sink/sink.conf`. Copy it into the VPS proxy's config directory:
-
-```bash
-cp /opt/infra/apps/sink/sink.conf /opt/infra/proxy/nginx/conf.d/sink.conf
-```
-
-### Step 6 — Validate and reload the VPS proxy
-
-```bash
-docker exec proxy-nginx nginx -t
-docker exec proxy-nginx nginx -s reload
-```
-
-If `nginx -t` reports a syntax error, review the contents of `sink.conf` before reloading.
-
-### Step 7 — Verify
-
-```bash
-curl https://sink.marin.cr/api/health/live
-```
-
-Expected response: `{"status":"ok"}` or similar. A 200 response confirms TLS, the VPS proxy, the Sink Nginx router, and the API container are all working.
 
 ---
 

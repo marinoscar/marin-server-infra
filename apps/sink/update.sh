@@ -37,7 +37,7 @@ COMPOSE_FILE="${SINK_DIR}/compose.yml"
 PROXY_CONF_SRC="${SINK_DIR}/sink.conf"
 PROXY_CONF_DST="/opt/infra/proxy/nginx/conf.d/sink.conf"
 BRANCH="main"
-DOMAIN="sink.dev.marin.cr"
+DOMAIN="sink.marin.cr"
 
 # Options
 NO_CACHE=false
