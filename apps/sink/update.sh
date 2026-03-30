@@ -19,6 +19,7 @@
 # Options:
 #   --no-cache     Force full Docker rebuild (ignores layer cache)
 #   --skip-proxy   Skip VPS proxy config update
+#   --migrate-only Run database migrations only (skip build/restart)
 #   --help, -h     Show help
 #
 # Prerequisites:
@@ -42,6 +43,7 @@ DOMAIN="sink.marin.cr"
 # Options
 NO_CACHE=false
 SKIP_PROXY=false
+MIGRATE_ONLY=false
 
 # ---------------------------------------------------------------------------
 # Logging — output goes to both terminal and a timestamped log file
@@ -67,6 +69,7 @@ show_help() {
     echo "Options:"
     echo "  --no-cache     Force full Docker image rebuild (no layer cache)"
     echo "  --skip-proxy   Skip updating VPS reverse proxy config"
+    echo "  --migrate-only Run database migrations only (skip build/restart)"
     echo "  --help, -h     Show this help message"
     echo ""
     echo "This script pulls latest code, rebuilds containers, runs"
@@ -78,8 +81,9 @@ show_help() {
 # ---------------------------------------------------------------------------
 for arg in "$@"; do
     case "${arg}" in
-        --no-cache)   NO_CACHE=true ;;
-        --skip-proxy) SKIP_PROXY=true ;;
+        --no-cache)    NO_CACHE=true ;;
+        --skip-proxy)  SKIP_PROXY=true ;;
+        --migrate-only) MIGRATE_ONLY=true ;;
         --help|-h)    show_help; exit 0 ;;
         *)            log "Unknown option: ${arg}"; show_help; exit 1 ;;
     esac
@@ -120,15 +124,13 @@ git fetch origin
 
 # Check if already up to date
 REMOTE_COMMIT=$(git rev-parse --short "origin/${BRANCH}")
+ALREADY_CURRENT=false
 if [ "${CURRENT_COMMIT}" = "${REMOTE_COMMIT}" ]; then
+    ALREADY_CURRENT=true
     log "  Already at latest commit (${CURRENT_COMMIT})."
-    log "  Use --no-cache to force a rebuild anyway."
-    if [ "${NO_CACHE}" = "false" ]; then
-        log ""
-        log "  No update needed. Exiting."
-        exit 0
+    if [ "${NO_CACHE}" = "false" ] && [ "${MIGRATE_ONLY}" = "false" ]; then
+        log "  Checking for pending migrations before skipping..."
     fi
-    log "  --no-cache specified, continuing with rebuild..."
 else
     log "  Current: ${CURRENT_COMMIT}"
     log "  Latest:  ${REMOTE_COMMIT}"
@@ -139,12 +141,14 @@ NEW_COMMIT=$(git rev-parse --short HEAD)
 log "  Updated to ${NEW_COMMIT}."
 
 # Show what changed
-CHANGES=$(git log --oneline "${CURRENT_COMMIT}..${NEW_COMMIT}" 2>/dev/null || echo "(first update)")
-log ""
-log "  Changes:"
-echo "${CHANGES}" | while IFS= read -r line; do
-    log "    ${line}"
-done
+if [ "${ALREADY_CURRENT}" = "false" ]; then
+    CHANGES=$(git log --oneline "${CURRENT_COMMIT}..${NEW_COMMIT}" 2>/dev/null || echo "(first update)")
+    log ""
+    log "  Changes:"
+    echo "${CHANGES}" | while IFS= read -r line; do
+        log "    ${line}"
+    done
+fi
 
 cd "${SINK_DIR}"
 
@@ -152,25 +156,28 @@ cd "${SINK_DIR}"
 # Step 2: Rebuild Docker images
 # ---------------------------------------------------------------------------
 log ""
-log "[2/6] Rebuilding Docker images..."
+if [ "${MIGRATE_ONLY}" = "true" ]; then
+    log "[2/6] Skipping Docker rebuild (--migrate-only)."
+elif [ "${ALREADY_CURRENT}" = "true" ] && [ "${NO_CACHE}" = "false" ]; then
+    log "[2/6] Skipping Docker rebuild (no code changes)."
+else
+    log "[2/6] Rebuilding Docker images..."
 
-BUILD_ARGS=""
-if [ "${NO_CACHE}" = "true" ]; then
-    BUILD_ARGS="--no-cache"
-    log "  (--no-cache: full rebuild)"
+    BUILD_ARGS=""
+    if [ "${NO_CACHE}" = "true" ]; then
+        BUILD_ARGS="--no-cache"
+        log "  (--no-cache: full rebuild)"
+    fi
+
+    docker compose -f "${COMPOSE_FILE}" build ${BUILD_ARGS}
+    log "  Images rebuilt."
 fi
 
-docker compose -f "${COMPOSE_FILE}" build ${BUILD_ARGS}
-log "  Images rebuilt."
-
 # ---------------------------------------------------------------------------
-# Step 3: Run database migrations
+# Step 3: Run database migrations (ALWAYS runs — even if code is unchanged)
 # ---------------------------------------------------------------------------
 log ""
 log "[3/6] Running database migrations..."
-
-# Stop the API to run migrations cleanly, then restart
-docker compose -f "${COMPOSE_FILE}" stop api 2>/dev/null || true
 
 # Source .env to get database connection parameters
 set -a
@@ -185,9 +192,23 @@ if [ "${POSTGRES_SSL:-false}" = "true" ]; then
     DATABASE_URL="${DATABASE_URL}?sslmode=require"
 fi
 
-docker compose -f "${COMPOSE_FILE}" run --rm -T -e DATABASE_URL="${DATABASE_URL}" api sh -c \
-    "npx prisma migrate deploy 2>&1" \
-    | while IFS= read -r line; do log "    ${line}"; done
+# Stop the API to run migrations cleanly, then restart
+docker compose -f "${COMPOSE_FILE}" stop api 2>/dev/null || true
+
+# Run prisma migrate deploy — this applies any pending migrations
+# It's safe to run even if no migrations are pending (it's a no-op)
+MIGRATE_OUTPUT=$(docker compose -f "${COMPOSE_FILE}" run --rm -T -e DATABASE_URL="${DATABASE_URL}" api sh -c \
+    "npx prisma migrate deploy 2>&1")
+MIGRATE_EXIT=$?
+
+echo "${MIGRATE_OUTPUT}" | while IFS= read -r line; do log "    ${line}"; done
+
+if [ "${MIGRATE_EXIT}" -ne 0 ]; then
+    log "  ERROR: Migrations failed with exit code ${MIGRATE_EXIT}."
+    log "  Check the output above for details."
+    log "  You can retry with: ./update.sh --migrate-only"
+    exit 1
+fi
 
 log "  Migrations complete."
 
@@ -195,14 +216,19 @@ log "  Migrations complete."
 # Step 4: Restart services
 # ---------------------------------------------------------------------------
 log ""
-log "[4/6] Restarting services..."
+if [ "${MIGRATE_ONLY}" = "true" ]; then
+    log "[4/6] Starting API back up (--migrate-only, no full restart)..."
+    docker compose -f "${COMPOSE_FILE}" start api 2>/dev/null || docker compose -f "${COMPOSE_FILE}" up -d api
+else
+    log "[4/6] Restarting services..."
 
-docker compose -f "${COMPOSE_FILE}" up -d
-log "  All containers started."
+    docker compose -f "${COMPOSE_FILE}" up -d
+    log "  All containers started."
 
-# Restart nginx so it resolves the new upstream container IPs
-docker compose -f "${COMPOSE_FILE}" restart nginx 2>/dev/null || true
-log "  Nginx restarted."
+    # Restart nginx so it resolves the new upstream container IPs
+    docker compose -f "${COMPOSE_FILE}" restart nginx 2>/dev/null || true
+    log "  Nginx restarted."
+fi
 
 # Wait for API to be ready
 log "  Waiting for API to initialize..."
@@ -226,7 +252,9 @@ fi
 # Step 5: Update VPS proxy config (optional)
 # ---------------------------------------------------------------------------
 log ""
-if [ "${SKIP_PROXY}" = "true" ]; then
+if [ "${MIGRATE_ONLY}" = "true" ]; then
+    log "[5/6] Skipping proxy config update (--migrate-only)."
+elif [ "${SKIP_PROXY}" = "true" ]; then
     log "[5/6] Skipping proxy config update (--skip-proxy)."
 else
     log "[5/6] Updating VPS proxy config..."
