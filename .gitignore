@@ -51,3 +51,6 @@ proxy/nginx/logs/
 # Mattermost
 apps/mattermost/config/
 apps/mattermost/logs/
+
+# Guacamole
+apps/guacamole/guacamole-home/
