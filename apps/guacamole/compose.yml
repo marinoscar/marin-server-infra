@@ -1,0 +1,21 @@
+services:
+  guacd:
+    image: guacamole/guacd:latest
+    container_name: infra-guacd
+    restart: unless-stopped
+    network_mode: host
+
+  guacamole:
+    image: guacamole/guacamole:latest
+    container_name: infra-guacamole
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      GUACD_HOSTNAME: "127.0.0.1"
+      GUACD_PORT: "4822"
+      GUACAMOLE_HOME: "/guacamole-home"
+    volumes:
+      - ./guacamole-home:/guacamole-home:ro
+      - ./server.xml:/usr/local/tomcat/conf/server.xml:ro
+    depends_on:
+      - guacd
