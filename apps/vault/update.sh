@@ -1,0 +1,322 @@
+#!/usr/bin/env bash
+# =============================================================================
+# update.sh — Update Vault on VPS
+# =============================================================================
+# Location on VPS: /opt/infra/apps/vault/update.sh
+#
+# This script:
+#   1. Pulls the latest code from origin/main
+#   2. Rebuilds Docker images (API + Web)
+#   3. Runs Prisma database migrations
+#   4. Restarts all services
+#   5. Optionally updates VPS proxy nginx config
+#   6. Verifies service health
+#
+# Usage:
+#   cd /opt/infra/apps/vault
+#   ./update.sh
+#
+# Options:
+#   --no-cache     Force full Docker rebuild (ignores layer cache)
+#   --skip-proxy   Skip VPS proxy config update
+#   --migrate-only Run database migrations only (skip build/restart)
+#   --help, -h     Show help
+#
+# Prerequisites:
+#   - Vault installed via install-vault.sh
+#   - .env file configured
+#   - Services running
+# =============================================================================
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+VAULT_DIR="/opt/infra/apps/vault"
+REPO_DIR="${VAULT_DIR}/repo"
+COMPOSE_FILE="${VAULT_DIR}/compose.yml"
+PROXY_CONF_SRC="${VAULT_DIR}/vault.conf"
+PROXY_CONF_DST="/opt/infra/proxy/nginx/conf.d/vault.conf"
+BRANCH="main"
+DOMAIN="vault.marin.cr"
+
+# Options
+NO_CACHE=false
+SKIP_PROXY=false
+MIGRATE_ONLY=false
+
+# ---------------------------------------------------------------------------
+# Logging — output goes to both terminal and a timestamped log file
+# ---------------------------------------------------------------------------
+LOG_DIR="${VAULT_DIR}/logs"
+mkdir -p "${LOG_DIR}"
+LOG_FILE="${LOG_DIR}/update-$(date '+%Y%m%d-%H%M%S').log"
+exec > >(tee -a "${LOG_FILE}") 2>&1
+
+# Keep only the last 10 log files
+ls -1t "${LOG_DIR}"/update-*.log 2>/dev/null | tail -n +11 | xargs -r rm -f
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+log() { echo "[vault-update] $(date '+%H:%M:%S') $*"; }
+
+show_help() {
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
+    echo "Update Vault to the latest version."
+    echo ""
+    echo "Options:"
+    echo "  --no-cache     Force full Docker image rebuild (no layer cache)"
+    echo "  --skip-proxy   Skip updating VPS reverse proxy config"
+    echo "  --migrate-only Run database migrations only (skip build/restart)"
+    echo "  --help, -h     Show this help message"
+    echo ""
+    echo "This script pulls latest code, rebuilds containers, runs"
+    echo "database migrations, and restarts services."
+}
+
+# ---------------------------------------------------------------------------
+# Parse arguments
+# ---------------------------------------------------------------------------
+for arg in "$@"; do
+    case "${arg}" in
+        --no-cache)    NO_CACHE=true ;;
+        --skip-proxy)  SKIP_PROXY=true ;;
+        --migrate-only) MIGRATE_ONLY=true ;;
+        --help|-h)    show_help; exit 0 ;;
+        *)            log "Unknown option: ${arg}"; show_help; exit 1 ;;
+    esac
+done
+
+# ---------------------------------------------------------------------------
+# Pre-flight checks
+# ---------------------------------------------------------------------------
+if [ ! -d "${REPO_DIR}/.git" ]; then
+    log "ERROR: Repository not found at ${REPO_DIR}"
+    log "Run install-vault.sh first."
+    exit 1
+fi
+
+if [ ! -f "${VAULT_DIR}/.env" ]; then
+    log "ERROR: .env file not found at ${VAULT_DIR}/.env"
+    exit 1
+fi
+
+if [ ! -f "${COMPOSE_FILE}" ]; then
+    log "ERROR: compose.yml not found at ${COMPOSE_FILE}"
+    log "Run install-vault.sh to generate it."
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Step 1: Pull latest code
+# ---------------------------------------------------------------------------
+log "============================================"
+log " Vault Updater"
+log "============================================"
+log ""
+log "[1/6] Pulling latest code..."
+
+cd "${REPO_DIR}"
+CURRENT_COMMIT=$(git rev-parse --short HEAD)
+git fetch origin
+
+# Check if already up to date
+REMOTE_COMMIT=$(git rev-parse --short "origin/${BRANCH}")
+ALREADY_CURRENT=false
+if [ "${CURRENT_COMMIT}" = "${REMOTE_COMMIT}" ]; then
+    ALREADY_CURRENT=true
+    log "  Already at latest commit (${CURRENT_COMMIT})."
+    if [ "${NO_CACHE}" = "false" ] && [ "${MIGRATE_ONLY}" = "false" ]; then
+        log "  Checking for pending migrations before skipping..."
+    fi
+else
+    log "  Current: ${CURRENT_COMMIT}"
+    log "  Latest:  ${REMOTE_COMMIT}"
+fi
+
+git reset --hard "origin/${BRANCH}"
+NEW_COMMIT=$(git rev-parse --short HEAD)
+log "  Updated to ${NEW_COMMIT}."
+
+# Show what changed
+if [ "${ALREADY_CURRENT}" = "false" ]; then
+    CHANGES=$(git log --oneline "${CURRENT_COMMIT}..${NEW_COMMIT}" 2>/dev/null || echo "(first update)")
+    log ""
+    log "  Changes:"
+    echo "${CHANGES}" | while IFS= read -r line; do
+        log "    ${line}"
+    done
+fi
+
+cd "${VAULT_DIR}"
+
+# ---------------------------------------------------------------------------
+# Step 2: Rebuild Docker images
+# ---------------------------------------------------------------------------
+log ""
+if [ "${MIGRATE_ONLY}" = "true" ]; then
+    log "[2/6] Skipping Docker rebuild (--migrate-only)."
+elif [ "${ALREADY_CURRENT}" = "true" ] && [ "${NO_CACHE}" = "false" ]; then
+    log "[2/6] Skipping Docker rebuild (no code changes)."
+else
+    log "[2/6] Rebuilding Docker images..."
+
+    BUILD_ARGS=""
+    if [ "${NO_CACHE}" = "true" ]; then
+        BUILD_ARGS="--no-cache"
+        log "  (--no-cache: full rebuild)"
+    fi
+
+    docker compose -f "${COMPOSE_FILE}" build ${BUILD_ARGS}
+    log "  Images rebuilt."
+fi
+
+# ---------------------------------------------------------------------------
+# Step 3: Run database migrations (ALWAYS runs — even if code is unchanged)
+# ---------------------------------------------------------------------------
+log ""
+log "[3/6] Running database migrations..."
+
+# Source .env to get database connection parameters
+set -a
+. "${VAULT_DIR}/.env"
+set +a
+
+# URL-encode the password (handles special characters like ! @ # etc.)
+ENCODED_PW=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${POSTGRES_PASSWORD}', safe=''))")
+
+DATABASE_URL="postgresql://${POSTGRES_USER}:${ENCODED_PW}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
+if [ "${POSTGRES_SSL:-false}" = "true" ]; then
+    DATABASE_URL="${DATABASE_URL}?sslmode=require"
+fi
+
+# Stop the API to run migrations cleanly, then restart
+docker compose -f "${COMPOSE_FILE}" stop api 2>/dev/null || true
+
+# Run prisma migrate deploy — this applies any pending migrations
+# It's safe to run even if no migrations are pending (it's a no-op)
+MIGRATE_OUTPUT=$(docker compose -f "${COMPOSE_FILE}" run --rm -T -e DATABASE_URL="${DATABASE_URL}" api sh -c \
+    "npx prisma migrate deploy 2>&1")
+MIGRATE_EXIT=$?
+
+echo "${MIGRATE_OUTPUT}" | while IFS= read -r line; do log "    ${line}"; done
+
+if [ "${MIGRATE_EXIT}" -ne 0 ]; then
+    log "  ERROR: Migrations failed with exit code ${MIGRATE_EXIT}."
+    log "  Check the output above for details."
+    log "  You can retry with: ./update.sh --migrate-only"
+    exit 1
+fi
+
+log "  Migrations complete."
+
+# ---------------------------------------------------------------------------
+# Step 4: Restart services
+# ---------------------------------------------------------------------------
+log ""
+if [ "${MIGRATE_ONLY}" = "true" ]; then
+    log "[4/6] Starting API back up (--migrate-only, no full restart)..."
+    docker compose -f "${COMPOSE_FILE}" start api 2>/dev/null || docker compose -f "${COMPOSE_FILE}" up -d api
+else
+    log "[4/6] Restarting services..."
+
+    docker compose -f "${COMPOSE_FILE}" up -d
+    log "  All containers started."
+
+    # Restart nginx so it resolves the new upstream container IPs
+    docker compose -f "${COMPOSE_FILE}" restart nginx 2>/dev/null || true
+    log "  Nginx restarted."
+fi
+
+# Wait for API to be ready
+log "  Waiting for API to initialize..."
+API_READY=false
+for i in $(seq 1 60); do
+    if docker exec vault-api wget -qO- http://localhost:3000/api/health/live >/dev/null 2>&1; then
+        API_READY=true
+        break
+    fi
+    sleep 2
+done
+
+if [ "${API_READY}" = "true" ]; then
+    log "  API is healthy."
+else
+    log "  WARNING: API health check did not pass within 120 seconds."
+    log "  Check logs: docker compose -f ${COMPOSE_FILE} logs api"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 5: Update VPS proxy config (optional)
+# ---------------------------------------------------------------------------
+log ""
+if [ "${MIGRATE_ONLY}" = "true" ]; then
+    log "[5/6] Skipping proxy config update (--migrate-only)."
+elif [ "${SKIP_PROXY}" = "true" ]; then
+    log "[5/6] Skipping proxy config update (--skip-proxy)."
+else
+    log "[5/6] Updating VPS proxy config..."
+
+    if [ -f "${PROXY_CONF_SRC}" ] && [ -d "$(dirname "${PROXY_CONF_DST}")" ]; then
+        # Check if config has changed
+        if diff -q "${PROXY_CONF_SRC}" "${PROXY_CONF_DST}" >/dev/null 2>&1; then
+            log "  Proxy config unchanged. Skipping."
+        else
+            cp "${PROXY_CONF_SRC}" "${PROXY_CONF_DST}"
+            log "  Config copied to ${PROXY_CONF_DST}."
+
+            # Validate nginx config before reloading
+            if docker exec proxy-nginx nginx -t 2>/dev/null; then
+                docker exec proxy-nginx nginx -s reload
+                log "  VPS proxy reloaded."
+            else
+                log "  WARNING: Nginx config validation failed."
+                log "  Check: docker exec proxy-nginx nginx -t"
+            fi
+        fi
+    else
+        log "  Proxy config or destination not found. Skipping."
+        log "  (This is normal if the proxy is not yet set up.)"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Step 6: Verify health
+# ---------------------------------------------------------------------------
+log ""
+log "[6/6] Verifying services..."
+sleep 3
+
+# Check containers
+RUNNING=$(docker compose -f "${COMPOSE_FILE}" ps --format '{{.Name}}' 2>/dev/null | wc -l)
+log "  Containers running: ${RUNNING}"
+
+# Check API health
+API_STATUS=$(docker exec vault-api wget -qO- http://localhost:3000/api/health/live 2>/dev/null || echo "FAIL")
+if echo "${API_STATUS}" | grep -qi "ok\|status\|healthy"; then
+    log "  API health:    OK"
+else
+    log "  API health:    WARN (${API_STATUS})"
+fi
+
+# Save update state for reference
+cat > "${VAULT_DIR}/.update-state" << EOF
+last_update=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+previous_commit=${CURRENT_COMMIT}
+current_commit=${NEW_COMMIT}
+branch=${BRANCH}
+EOF
+
+log ""
+log "============================================"
+log " Vault update complete!"
+log "============================================"
+log ""
+log " ${CURRENT_COMMIT} → ${NEW_COMMIT}"
+log " URL: https://${DOMAIN}"
+log ""
+log " Verify: curl https://${DOMAIN}/api/health/live"
+log ""
+log "============================================"

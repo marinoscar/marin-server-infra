@@ -1,0 +1,457 @@
+#!/usr/bin/env bash
+# =============================================================================
+# install-vault.sh — Install Vault on VPS (end-to-end)
+# =============================================================================
+# Location on VPS: /opt/infra/apps/vault/install-vault.sh
+#
+# This script:
+#   1. Creates the application directory structure
+#   2. Clones (or pulls) the Vault repository
+#   3. Validates that .env exists
+#   4. Generates production compose.yml and nginx proxy config
+#   5. Builds images and runs Prisma migrations + seeds
+#   6. Starts all services (api, web, nginx)
+#   7. Issues a Let's Encrypt SSL certificate (if needed)
+#   8. Installs the proxy config and reloads the VPS proxy
+#   9. Verifies service health (internal + public HTTPS)
+#
+# Usage:
+#   cd /opt/infra/apps/vault
+#   chmod +x install-vault.sh
+#   ./install-vault.sh
+#
+# For updates, use update.sh instead.
+#
+# Prerequisites:
+#   - Docker and Docker Compose installed
+#   - PostgreSQL accessible from the VPS (cloud-hosted or local)
+#   - .env file with production values
+#   - DNS A record for vault.marin.cr pointing to this VPS
+#   - VPS reverse proxy running (proxy-nginx container)
+# =============================================================================
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+VAULT_DIR="/opt/infra/apps/vault"
+REPO_DIR="${VAULT_DIR}/repo"
+REPO_URL="https://github.com/marinoscar/vault.git"
+BRANCH="main"
+DOMAIN="vault.marin.cr"
+HOST_PORT="8322"
+CERT_EMAIL="oscar@marin.cr"
+
+# Proxy paths
+PROXY_CONF_DIR="/opt/infra/proxy/nginx/conf.d"
+PROXY_CONF_SRC="${VAULT_DIR}/vault.conf"
+PROXY_CONF_DST="${PROXY_CONF_DIR}/vault.conf"
+LE_HOST="/opt/infra/proxy/letsencrypt"
+WEBROOT_HOST="/opt/infra/proxy/webroot"
+CERT_DIR="${LE_HOST}/live/${DOMAIN}"
+
+TOTAL_STEPS=9
+log() { echo "[vault] $*"; }
+
+# ---------------------------------------------------------------------------
+# Step 1: Create directory structure
+# ---------------------------------------------------------------------------
+log "============================================"
+log " Vault Installer"
+log "============================================"
+log ""
+log "[1/${TOTAL_STEPS}] Setting up directories..."
+
+mkdir -p "${VAULT_DIR}"
+
+log "  Directories ready."
+
+# ---------------------------------------------------------------------------
+# Step 2: Clone or pull the repository
+# ---------------------------------------------------------------------------
+log ""
+log "[2/${TOTAL_STEPS}] Fetching source code..."
+
+if [ -d "${REPO_DIR}/.git" ]; then
+    log "  Repository exists. Pulling latest from ${BRANCH}..."
+    cd "${REPO_DIR}"
+    git fetch origin
+    git reset --hard "origin/${BRANCH}"
+    cd "${VAULT_DIR}"
+    log "  Updated to latest."
+else
+    log "  Cloning from ${REPO_URL}..."
+    git clone --branch "${BRANCH}" "${REPO_URL}" "${REPO_DIR}"
+    log "  Clone complete."
+fi
+
+# ---------------------------------------------------------------------------
+# Step 3: Check .env exists
+# ---------------------------------------------------------------------------
+log ""
+log "[3/${TOTAL_STEPS}] Checking environment file..."
+
+if [ ! -f "${VAULT_DIR}/.env" ]; then
+    log ""
+    log "  ERROR: .env file not found at ${VAULT_DIR}/.env"
+    log ""
+    log "  Create it from the template:"
+    log "    cp ${REPO_DIR}/infra/compose/.env.example ${VAULT_DIR}/.env"
+    log "    nano ${VAULT_DIR}/.env"
+    log ""
+    log "  Required values to set:"
+    log "    - COMPOSE_PROJECT_NAME=vault"
+    log "    - NODE_ENV=production"
+    log "    - APP_URL=https://${DOMAIN}"
+    log "    - POSTGRES_HOST (your PostgreSQL hostname)"
+    log "    - POSTGRES_PASSWORD"
+    log "    - POSTGRES_SSL=true (if using cloud PostgreSQL)"
+    log "    - JWT_SECRET (generate with: openssl rand -hex 32)"
+    log "    - COOKIE_SECRET (generate with: openssl rand -hex 32)"
+    log "    - GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET"
+    log "    - GOOGLE_CALLBACK_URL=https://${DOMAIN}/api/auth/google/callback"
+    log "    - S3_BUCKET, S3_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY"
+    log "    - VAULT_ENCRYPTION_KEY (generate with: openssl rand -hex 32)"
+    log "    - INITIAL_ADMIN_EMAIL"
+    log ""
+    log "  Then run this script again."
+    exit 1
+fi
+
+log "  .env file found."
+
+# ---------------------------------------------------------------------------
+# Step 4: Generate production compose.yml and proxy config
+# ---------------------------------------------------------------------------
+log ""
+log "[4/${TOTAL_STEPS}] Generating production configuration..."
+
+# ---- compose.yml ----
+cat > "${VAULT_DIR}/compose.yml" << 'COMPOSE_EOF'
+# =============================================================================
+# Vault — Production Docker Compose
+# =============================================================================
+# Generated by install-vault.sh
+# Do not edit manually — re-run the installer to regenerate.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Nginx — Internal reverse proxy (routes /api → api, / → web)
+  # ---------------------------------------------------------------------------
+  nginx:
+    container_name: vault-nginx
+    image: nginx:alpine
+    ports:
+      - "127.0.0.1:8322:80"
+    volumes:
+      - ./repo/infra/nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+      - web
+    restart: unless-stopped
+    networks:
+      - vault-internal
+
+  # ---------------------------------------------------------------------------
+  # API — NestJS Backend (Fastify)
+  # ---------------------------------------------------------------------------
+  api:
+    container_name: vault-api
+    build:
+      context: ./repo/apps/api
+      dockerfile: Dockerfile
+      target: production
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+    networks:
+      - vault-internal
+
+  # ---------------------------------------------------------------------------
+  # Web — React Frontend (static build served by Nginx)
+  # ---------------------------------------------------------------------------
+  web:
+    container_name: vault-web
+    build:
+      context: ./repo/apps/web
+      dockerfile: Dockerfile
+      target: production
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    networks:
+      - vault-internal
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  # Internal network for service-to-service communication
+  vault-internal:
+    driver: bridge
+COMPOSE_EOF
+
+log "  compose.yml generated."
+
+# ---- VPS proxy nginx config ----
+cat > "${VAULT_DIR}/vault.conf" << NGINX_EOF
+# =============================================================================
+# ${DOMAIN} — VPS Reverse Proxy Config
+# =============================================================================
+# Generated by install-vault.sh
+# =============================================================================
+
+server {
+    listen 443 ssl http2;
+    server_name ${DOMAIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # Disable body size limit (multi-GB file uploads via S3 multipart)
+    client_max_body_size 0;
+
+    # API routes
+    location /api {
+        proxy_pass http://127.0.0.1:${HOST_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 120s;
+        proxy_read_timeout 120s;
+    }
+
+    # Frontend (React SPA)
+    location / {
+        proxy_pass http://127.0.0.1:${HOST_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+
+# HTTP → HTTPS redirect
+server {
+    listen 80;
+    server_name ${DOMAIN};
+
+    # ACME challenge (Let's Encrypt)
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://\$server_name\$request_uri;
+    }
+}
+NGINX_EOF
+
+log "  vault.conf generated."
+
+# ---------------------------------------------------------------------------
+# Step 5: Build images and run migrations
+# ---------------------------------------------------------------------------
+log ""
+log "[5/${TOTAL_STEPS}] Building images..."
+
+cd "${VAULT_DIR}"
+docker compose build
+
+log "  Images built."
+
+log ""
+log "  Running database migrations..."
+
+# Source .env to get database connection parameters
+set -a
+. "${VAULT_DIR}/.env"
+set +a
+
+# URL-encode the password (handles special characters like ! @ # etc.)
+ENCODED_PW=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${POSTGRES_PASSWORD}', safe=''))")
+
+DATABASE_URL="postgresql://${POSTGRES_USER}:${ENCODED_PW}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
+if [ "${POSTGRES_SSL:-false}" = "true" ]; then
+    DATABASE_URL="${DATABASE_URL}?sslmode=require"
+fi
+
+docker compose run --rm -T -e DATABASE_URL="${DATABASE_URL}" api sh -c \
+    "npx prisma migrate deploy"
+
+log "  Migrations complete."
+
+log "  Running database seeds..."
+
+docker compose run --rm -T -e DATABASE_URL="${DATABASE_URL}" -e INITIAL_ADMIN_EMAIL="${INITIAL_ADMIN_EMAIL}" api sh -c \
+    "npx prisma db seed"
+
+log "  Seeds complete."
+
+# ---------------------------------------------------------------------------
+# Step 6: Start all services
+# ---------------------------------------------------------------------------
+log ""
+log "[6/${TOTAL_STEPS}] Starting all services..."
+
+docker compose up -d
+
+log "  All containers started."
+
+# Wait for API to be ready
+log "  Waiting for API to initialize..."
+API_READY=false
+for i in $(seq 1 60); do
+    if docker exec vault-api wget -qO- http://localhost:3000/api/health/live >/dev/null 2>&1; then
+        API_READY=true
+        break
+    fi
+    sleep 2
+done
+
+if [ "${API_READY}" = "false" ]; then
+    log "  WARNING: API health check did not pass within 120 seconds."
+    log "  Check logs: docker compose logs api"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 7: Issue SSL certificate (if needed)
+# ---------------------------------------------------------------------------
+log ""
+log "[7/${TOTAL_STEPS}] Checking SSL certificate..."
+
+if [ -f "${CERT_DIR}/fullchain.pem" ]; then
+    log "  Certificate already exists for ${DOMAIN}. Skipping."
+else
+    log "  No certificate found for ${DOMAIN}. Issuing via Let's Encrypt..."
+
+    # Deploy a temporary HTTP-only config so certbot can reach the ACME challenge
+    cat > "${PROXY_CONF_DST}" << TEMP_NGINX_EOF
+# Temporary HTTP-only config for Let's Encrypt certificate issuance
+server {
+    listen 80;
+    server_name ${DOMAIN};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 503 "Certificate pending";
+    }
+}
+TEMP_NGINX_EOF
+
+    log "  Temporary HTTP config deployed."
+
+    # Reload proxy to pick up the temporary config
+    if docker exec proxy-nginx nginx -t 2>/dev/null; then
+        docker exec proxy-nginx nginx -s reload
+        log "  Proxy reloaded with temporary config."
+    else
+        log "  ERROR: Nginx config validation failed. Cannot issue certificate."
+        log "  Check: docker exec proxy-nginx nginx -t"
+        exit 1
+    fi
+
+    # Issue the certificate
+    docker run --rm \
+        -v "${LE_HOST}:/etc/letsencrypt" \
+        -v "${WEBROOT_HOST}:/var/www/certbot" \
+        certbot/certbot:latest certonly \
+            --webroot -w /var/www/certbot \
+            -d "${DOMAIN}" \
+            --non-interactive \
+            --agree-tos \
+            --email "${CERT_EMAIL}"
+
+    # Verify cert was created
+    if [ -f "${CERT_DIR}/fullchain.pem" ]; then
+        log "  Certificate issued successfully."
+    else
+        log "  ERROR: Certificate was not created. Check certbot output above."
+        exit 1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Step 8: Install proxy config and reload
+# ---------------------------------------------------------------------------
+log ""
+log "[8/${TOTAL_STEPS}] Installing VPS proxy config..."
+
+cp "${PROXY_CONF_SRC}" "${PROXY_CONF_DST}"
+log "  Config copied to ${PROXY_CONF_DST}."
+
+if docker exec proxy-nginx nginx -t 2>/dev/null; then
+    docker exec proxy-nginx nginx -s reload
+    log "  VPS proxy reloaded."
+else
+    log "  ERROR: Nginx config validation failed after installing vault.conf."
+    log "  Check: docker exec proxy-nginx nginx -t"
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Step 9: Verify health
+# ---------------------------------------------------------------------------
+log ""
+log "[9/${TOTAL_STEPS}] Verifying services..."
+sleep 3
+
+# Check containers are running
+RUNNING=$(docker compose ps --format '{{.Name}}' 2>/dev/null | wc -l)
+log "  Containers running: ${RUNNING}"
+
+# Check API health (internal)
+API_STATUS=$(docker exec vault-api wget -qO- http://localhost:3000/api/health/live 2>/dev/null || echo "FAIL")
+if echo "${API_STATUS}" | grep -qi "ok\|status\|healthy"; then
+    log "  API health (internal): OK"
+else
+    log "  API health (internal): WARN (response: ${API_STATUS})"
+    log "                         Check: docker compose logs api"
+fi
+
+# Check public HTTPS
+HTTPS_CODE=$(curl -so /dev/null -w '%{http_code}' "https://${DOMAIN}/" 2>/dev/null || echo "000")
+if [ "${HTTPS_CODE}" = "200" ]; then
+    log "  Public HTTPS:          OK (https://${DOMAIN}/)"
+else
+    log "  Public HTTPS:          WARN (HTTP ${HTTPS_CODE})"
+    log "                         Check DNS, certificate, and proxy config."
+fi
+
+log ""
+log "============================================"
+log " Vault installation complete!"
+log "============================================"
+log ""
+log " Internal URL: http://127.0.0.1:${HOST_PORT}"
+log " External URL: https://${DOMAIN}"
+log ""
+log " Remaining manual step:"
+log "   Configure Google OAuth redirect URI in Google Cloud Console:"
+log "   https://${DOMAIN}/api/auth/google/callback"
+log ""
+log "============================================"
