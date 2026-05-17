@@ -22,8 +22,14 @@ It includes the **lessons learned** and the troubleshooting steps that mattered.
 ### Why PostgreSQL is installed in Docker
 
 * Aligns with the platform strategy: **Docker + Compose** for services.
-* Version pinning (e.g., Postgres 16) and easy portability.
+* Version pinning (currently Postgres 17) and easy portability.
 * Clean persistence using `data/` folder.
+
+### Why the image is `pgvector/pgvector:pg17` (not `postgres:17-alpine`)
+
+* The shared Postgres needs **pgvector** so apps can opt in to vector similarity search.
+* `pgvector/pgvector:pg17` is the official pgvector image — Debian-based, same Postgres 17 binary, pgvector pre-compiled. Drop-in replacement: existing `./data/` works as-is.
+* Switching from Alpine (musl) to Debian (glibc) **doesn't affect data files** (Postgres storage isn't libc-dependent). Collation version is unset in existing DBs (Alpine never recorded one), so PG doesn't emit version-mismatch warnings.
 
 ### Why pgAdmin is not directly published to the internet
 
@@ -408,6 +414,75 @@ Add:
 ```bash
 docker restart proxy-nginx
 ```
+
+---
+
+## 13) pgvector — vector similarity search
+
+The shared Postgres ships with **pgvector** (version 0.8.x for PG 17). The extension binary is installed at the server level, but **not** enabled in any database by default — app owners enable it per-DB when they need it.
+
+### 13.1 Check availability (already-installed binaries)
+
+```bash
+docker exec infra-postgres psql -U admin -d postgres \
+    -c "SELECT name, default_version FROM pg_available_extensions WHERE name='vector';"
+```
+
+Expect one row showing `vector | 0.8.x`. If empty, the image was reverted to non-pgvector — restore by setting `image: pgvector/pgvector:pg17` in `compose.yml`.
+
+### 13.2 Enable on a database
+
+```sql
+\c your_database
+CREATE EXTENSION vector;
+```
+
+Confirm:
+
+```sql
+\dx vector
+SELECT extversion FROM pg_extension WHERE extname='vector';
+```
+
+### 13.3 Minimal usage example
+
+```sql
+CREATE TABLE items (
+    id        bigserial PRIMARY KEY,
+    embedding vector(1536)        -- 1536 is OpenAI/Anthropic dimension; pick what your model emits
+);
+
+-- HNSW index for fast nearest-neighbor (recommended)
+CREATE INDEX ON items USING hnsw (embedding vector_l2_ops);
+
+-- Insert and query
+INSERT INTO items (embedding) VALUES ('[0.1, 0.2, ...]');
+SELECT id, embedding <-> '[0.1, 0.2, ...]' AS distance
+FROM items ORDER BY distance LIMIT 10;
+```
+
+Distance operators: `<->` (L2 / Euclidean), `<#>` (negative inner product), `<=>` (cosine). Each operator has a matching index op-class (`vector_l2_ops`, `vector_ip_ops`, `vector_cosine_ops`) — use the one matching your query operator for the index to be useful.
+
+### 13.4 Image upgrade path
+
+When pgvector or Postgres minor releases come out:
+
+```bash
+cd /opt/infra/apps/postgres
+docker compose pull postgres
+docker compose up -d postgres   # recreates with newer minor; data is preserved
+```
+
+After upgrade, in each DB that uses vector:
+
+```sql
+ALTER EXTENSION vector UPDATE;   -- migrates extension to new minor version
+```
+
+### 13.5 Reference
+
+* [pgvector GitHub](https://github.com/pgvector/pgvector)
+* Official image tags: `pgvector/pgvector:pg17`, `pg16`, `pg15` — pick the major matching the data dir.
 
 ---
 
