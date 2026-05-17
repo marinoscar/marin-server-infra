@@ -9,6 +9,9 @@
 
 # Shared
 shared/renew-all-certs.log
+shared/backup-postgres-to-s3.env
+shared/backup-logs/
+apps/postgres/backups/
 
 # Proxy
 proxy/letsencrypt/
