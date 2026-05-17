@@ -17,4 +17,5 @@ Quick reference for all applications running on this server.
 | 🖥️ | **Guacamole** | Remote desktop gateway (RDP to home devices via Tailscale) | [remote.marin.cr](https://remote.marin.cr) |
 | 🦞 | **OpenClaw** | AI assistant dev container (SSH access, Node.js 24 + pnpm) | `ssh -p 2222 openclaw@openclaw.marin.cr` |
 | 🛡️ | **CrowdSec** | Intrusion detection and prevention system (host-level, no web UI) | — |
+| 🕸️ | **Neo4j** | Graph database (Neo4j 5 Community + APOC + GDS) with built-in Browser UI | [graph.marin.cr](https://graph.marin.cr) |
 | 🗄️ | **PostgreSQL** | Relational database server (direct access on port 5432, no web UI) | — |

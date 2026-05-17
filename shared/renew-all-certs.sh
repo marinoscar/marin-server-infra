@@ -61,5 +61,16 @@ docker run --rm \
 docker exec proxy-nginx nginx -t >> "${LOG}" 2>&1
 docker exec proxy-nginx nginx -s reload >> "${LOG}" 2>&1
 
+# Neo4j hook: if graph.marin.cr cert was renewed, re-sync ./ssl and restart neo4j.
+# Neo4j does not hot-reload SSL — a container restart is required.
+GRAPH_CERT="${LE_HOST}/live/graph.marin.cr/fullchain.pem"
+NEO4J_CERT="/opt/infra/apps/neo4j/ssl/fullchain.pem"
+if [ -f "${GRAPH_CERT}" ] && [ "${GRAPH_CERT}" -nt "${NEO4J_CERT}" ]; then
+  echo "graph.marin.cr cert is newer than Neo4j's copy — syncing..." >> "${LOG}"
+  /opt/infra/apps/neo4j/sync-certs.sh >> "${LOG}" 2>&1
+  docker restart infra-neo4j >> "${LOG}" 2>&1 || true
+  echo "Refreshed Neo4j SSL and restarted container" >> "${LOG}"
+fi
+
 echo "===== $(date -Is) Finished renew-all =====" >> "${LOG}"
 echo >> "${LOG}"

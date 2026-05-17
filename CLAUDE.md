@@ -89,6 +89,8 @@ These preferences are documented in `docs/server-setup.md`:
 | LibreChat | 3080 | chat.marin.cr |
 | ShellKeep | 8323 | shellkeep.marin.cr |
 | OpenClaw SSH | 2222 (SSH) | openclaw.marin.cr |
+| Neo4j Browser | 7474 | graph.marin.cr |
+| Neo4j Bolt | 7687 (TLS) | Direct (neo4j+s://graph.marin.cr:7687) |
 | PostgreSQL | 5432 | Direct (no proxy) |
 
 ## Verification Commands
@@ -121,6 +123,7 @@ Detailed runbooks are in `docs/`:
 - `crowdsec-setup.md` - Intrusion detection and prevention (host-level)
 - `librechat-setup.md` - AI chat interface with multi-provider support
 - `openclaw-setup.md` - SSH dev container for OpenClaw AI assistant
+- `neo4j-setup.md` - Graph database (Neo4j 5 Community + APOC + GDS) with Browser UI and Bolt over TLS
 
 ## SERVER.md Maintenance
 

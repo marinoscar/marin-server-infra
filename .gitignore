@@ -32,6 +32,12 @@ apps/marinapp/api.config.json
 # Knecta
 apps/knecta/repo
 
+# Neo4j (runtime data; .env, data/, backups/ already covered by global rules)
+apps/neo4j/logs
+apps/neo4j/plugins
+apps/neo4j/conf
+apps/neo4j/ssl
+
 # Boringproxy
 apps/boringproxy/src
 
