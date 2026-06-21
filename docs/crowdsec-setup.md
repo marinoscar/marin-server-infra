@@ -101,9 +101,15 @@ Configuration lives in `/etc/crowdsec/` (system path), similar to how UFW config
 When someone connects to this server, here is what happens:
 
 ```
-Attacker (1.2.3.4) tries to connect
+Client (1.2.3.4) tries to connect
         │
         ▼
+   ┌─────────────────────┐
+   │ iptables             │ Is this port 80 or 443?
+   │ (web bypass rules)   │──── YES → ACCEPT (always allowed, skip CrowdSec)
+   └──────────┬──────────┘
+              │ NO (SSH, PostgreSQL, etc.)
+              ▼
    ┌─────────────────────┐
    │ iptables             │ Is 1.2.3.4 in the CrowdSec ipset?
    │ (CROWDSEC_CHAIN)     │──── YES → DROP (connection silently refused)
@@ -123,7 +129,7 @@ Attacker (1.2.3.4) tries to connect
    ┌─────────────────────┐
    │ CrowdSec Agent       │ Reads log, detects attack pattern
    │                      │──── Match found → BAN 1.2.3.4
-   └─────────────────────┘     (added to ipset, future requests dropped)
+   └─────────────────────┘     (added to ipset, blocked on non-web ports)
 ```
 
 ### What is monitored
@@ -410,18 +416,44 @@ If the enrollment is lost (e.g., after reinstalling CrowdSec):
 
 ---
 
-## 8. UFW coexistence
+## 8. UFW coexistence and port exclusions
 
 CrowdSec and UFW both use iptables, but they do not conflict:
 
 - The CrowdSec firewall bouncer creates its own chain (`CROWDSEC_CHAIN`) in iptables
-- This chain is inserted at the **top** of the INPUT chain, **before** UFW's rules
-- Evaluation order: CrowdSec → UFW → application
+- This chain is inserted in the INPUT chain, **before** UFW's rules
 
-This means:
-- If CrowdSec bans an IP, that IP is blocked from **all** ports (SSH, HTTP, PostgreSQL, everything)
+### HTTP/HTTPS bypass
+
+Because this is a web server, **ports 80 and 443 are excluded from CrowdSec blocking**. Two iptables ACCEPT rules are inserted at the very top of the INPUT chain, before the `CROWDSEC_CHAIN`:
+
+```
+Chain INPUT (policy DROP)
+1    ACCEPT  tcp  --  0.0.0.0/0  0.0.0.0/0  tcp dpt:443
+2    ACCEPT  tcp  --  0.0.0.0/0  0.0.0.0/0  tcp dpt:80
+3    CROWDSEC_CHAIN  ...
+4    ts-input  ...
+5    ufw-before-...
+```
+
+This means a banned IP can still access websites hosted on this server but is blocked from SSH, PostgreSQL, and other sensitive ports. Web-layer protection is handled by Nginx (rate limiting, auth) and application-level controls.
+
+These rules are applied on boot by a systemd service:
+
+- **Service:** `iptables-web-allow.service`
+- **File:** `/etc/systemd/system/iptables-web-allow.service`
+- **Starts after:** `crowdsec-firewall-bouncer.service` (so the CROWDSEC_CHAIN exists before inserting above it)
+
+To verify the rules are in place:
+```bash
+iptables -L INPUT --line-numbers -n | head -5
+```
+
+### Evaluation order
+
+- **HTTP/HTTPS traffic (ports 80/443):** accepted immediately, never blocked by CrowdSec
+- **All other traffic:** CrowdSec → UFW → application
 - UFW continues to control which ports are open for non-banned IPs
-- No configuration changes were needed to either CrowdSec or UFW
 
 ---
 
@@ -439,8 +471,10 @@ This means:
 | `/etc/crowdsec/parsers/` | Enabled log parsers |
 | `/etc/crowdsec/collections/` | Enabled collections (bundles of parsers + scenarios) |
 | `/etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml` | Firewall bouncer configuration |
+| `/etc/crowdsec/parsers/s02-enrich/mywhitelists.yaml` | Permanent IP whitelist (trusted operator/infra IPs) |
 | `/var/lib/crowdsec/data/` | CrowdSec database (alerts, decisions, GeoIP data) |
 | `/etc/logrotate.d/nginx-proxy` | Log rotation for Nginx log files |
+| `/etc/systemd/system/iptables-web-allow.service` | Ensures HTTP/HTTPS bypass CrowdSec on boot |
 
 ### Infrastructure files (in Git)
 
@@ -536,10 +570,30 @@ journalctl -u crowdsec --no-pager -n 50
 ```bash
 # Unban the IP immediately
 cscli decisions delete --ip X.X.X.X
-
-# To prevent future false positives, whitelist the IP
-# Create or edit /etc/crowdsec/parsers/s02-enrich/my-whitelists.yaml
 ```
+
+To permanently whitelist an IP so it is never banned again, add it to the whitelist parser:
+
+```bash
+nano /etc/crowdsec/parsers/s02-enrich/mywhitelists.yaml
+```
+
+The file looks like this:
+```yaml
+name: crowdsecurity/mywhitelists
+description: "Whitelist trusted infrastructure IPs"
+whitelist:
+  reason: "trusted VPS - dev server"
+  ip:
+    - "X.X.X.X"
+```
+
+Add the IP to the list and reload CrowdSec:
+```bash
+systemctl reload crowdsec
+```
+
+Whitelisted IPs are ignored at the parser level — CrowdSec will never create alerts or decisions for them, regardless of what they do. Trusted operator IPs and known infrastructure IPs are whitelisted here to prevent lockouts.
 
 ### Nginx logs not appearing
 
