@@ -2,7 +2,7 @@
 
 ## Overview
 
-OpenClaw is a personal AI assistant ([openclaw.ai](https://openclaw.ai/)). It runs inside an SSH-accessible Docker container with Node.js 24, pnpm, build tools, and Python 3 pre-installed. The OpenClaw Gateway starts automatically with the container and serves a web dashboard proxied through Nginx with Authentik forward auth. SSH access is direct on port 2222. OpenClaw is also connected to Mattermost as a bot (`@openclaw`) on `team.marin.cr`.
+OpenClaw is a personal AI assistant ([openclaw.ai](https://openclaw.ai/)). It runs inside an SSH-accessible Docker container with Node.js 24, pnpm, Homebrew, Go, build tools, and Python 3 pre-installed. The OpenClaw Gateway starts automatically with the container and serves a web dashboard proxied through Nginx with Authentik forward auth. SSH access is direct on port 2222. OpenClaw is also connected to Mattermost as a bot (`@openclaw`) on `team.marin.cr`.
 
 ## Architecture
 
@@ -26,7 +26,7 @@ The container runs with `network_mode: host`, sharing the host's network stack d
 
 ```
 /opt/infra/apps/openclaw/
-├── Dockerfile           # Ubuntu 24.04 + Node.js 24 + pnpm + build tools + SSH
+├── Dockerfile           # Ubuntu 24.04 + Node.js 24 + pnpm + Homebrew + Go + build tools + SSH
 ├── entrypoint.sh        # Sets password, configures SSH keys, starts gateway + sshd
 ├── compose.yml          # Docker Compose definition (host network mode)
 ├── .env                 # Password (OPENCLAW_PASSWORD=..., not committed)
@@ -46,13 +46,40 @@ The container runs with `network_mode: host`, sharing the host's network stack d
 The container uses `network_mode: host` — there is no Docker port mapping. sshd listens on port 2222 directly (configured in `sshd_config`), and the gateway binds to `127.0.0.1:18789` via `--bind loopback`.
 
 The container includes:
+
+**Runtime and package managers:**
 - **Node.js 24** (via NodeSource)
 - **pnpm** (latest, via corepack)
+- **Homebrew (Linuxbrew)** — installed at `/home/linuxbrew/.linuxbrew`, available to the `openclaw` user
+- **Go** (via Homebrew) — needed by `gogcli` and other Go-based plugins
+- **Python 3**, pip, venv
+
+**Build tools:**
 - **build-essential**, gcc, g++, make, cmake
-- **Python 3**, pip
+- **pkg-config**, libssl-dev — native module compilation
+
+**Utilities:**
 - **git**, curl, wget, nano, sudo
+- **jq** — JSON processing
+- **file**, procps, unzip
+
+**Locale:** `en_US.UTF-8` (required by Homebrew and many tools)
 
 Non-root user `openclaw` has passwordless sudo access. OpenClaw is installed globally via npm at `/home/openclaw/.npm-global/bin/openclaw`.
+
+### Installing additional tools
+
+You can install additional packages inside the container via SSH:
+
+```bash
+# Via Homebrew (preferred for development tools)
+brew install <package>
+
+# Via apt (for system packages, requires sudo)
+sudo apt-get update && sudo apt-get install -y <package>
+```
+
+**Important:** Packages installed at runtime (via `brew install` or `apt-get`) persist across container restarts but are lost when the image is rebuilt (`docker compose build`). To make a package permanent, add it to the Dockerfile and rebuild. Homebrew itself and Go are baked into the image and always available after a rebuild.
 
 ## Gateway
 
@@ -467,7 +494,7 @@ ssh -p 2222 openclaw@openclaw.marin.cr
 curl -I https://openclaw.marin.cr/
 
 # Tools available inside container
-ssh -p 2222 openclaw@127.0.0.1 'node -v && pnpm -v && git --version && python3 --version'
+ssh -p 2222 openclaw@127.0.0.1 'node -v && pnpm -v && git --version && python3 --version && brew --version && go version && jq --version'
 
 # Gateway logs
 docker exec openclaw-ssh cat /tmp/openclaw/gateway.log | tail -20
@@ -487,30 +514,32 @@ ufw status | grep 2222
 
 3. **PATH not available in su context**: The entrypoint runs as root and uses `su - openclaw` to start the gateway. The openclaw binary is in `~/.npm-global/bin/` which isn't in the default PATH, so the entrypoint must explicitly set `PATH` before running `openclaw gateway`.
 
-4. **Gateway needs ~60-70 seconds to start**: The gateway loads plugins, connects to Mattermost, and registers hooks. Don't expect it to respond immediately after container start. Wait at least 70 seconds before checking.
+4. **Bind mount overwrites shell init files**: The home directory bind mount replaces `.bashrc`, `.profile`, and `.bash_profile` with whatever is in `data/home/`. Bash login shells (`su - openclaw`) read `~/.bash_profile` first and skip `~/.profile` if it exists. The entrypoint injects Homebrew's `shellenv` into all three files on every startup to ensure `brew` and `go` are always on PATH regardless of which file bash reads.
 
-5. **Host networking eliminates Docker bridge issues**: The container uses `network_mode: host`, so nginx connects to the gateway via the host's `127.0.0.1` directly — no Docker bridge IPs involved. This means `gateway.trustedProxies` is not needed (loopback is trusted by default).
+5. **Gateway needs ~60-70 seconds to start**: The gateway loads plugins, connects to Mattermost, and registers hooks. Don't expect it to respond immediately after container start. Wait at least 70 seconds before checking.
 
-6. **Gateway auth mode and bind are linked**: `--bind loopback` allows `auth.mode: "none"` (no token). `--bind lan` requires `auth.mode: "token"` — the gateway refuses to start without it. The current setup uses loopback + no auth, with Authentik handling authentication at the nginx layer.
+6. **Host networking eliminates Docker bridge issues**: The container uses `network_mode: host`, so nginx connects to the gateway via the host's `127.0.0.1` directly — no Docker bridge IPs involved. This means `gateway.trustedProxies` is not needed (loopback is trusted by default).
 
-7. **Gateway token is passed via hash fragment, not query parameter**: If you ever need token auth, the URL format is `https://openclaw.marin.cr/#token=<TOKEN>` (hash `#`, not query `?`). The hash fragment is read client-side by the Control UI JavaScript. Use `openclaw dashboard --no-open` to get the current URL with token.
+7. **Gateway auth mode and bind are linked**: `--bind loopback` allows `auth.mode: "none"` (no token). `--bind lan` requires `auth.mode: "token"` — the gateway refuses to start without it. The current setup uses loopback + no auth, with Authentik handling authentication at the nginx layer.
 
-8. **`openclaw config set` may not persist reliably**: The CLI command reports success but the JSON file may not be updated. Always verify changes by reading `~/.openclaw/openclaw.json` directly. For critical config changes, edit the JSON file with `nano` instead.
+8. **Gateway token is passed via hash fragment, not query parameter**: If you ever need token auth, the URL format is `https://openclaw.marin.cr/#token=<TOKEN>` (hash `#`, not query `?`). The hash fragment is read client-side by the Control UI JavaScript. Use `openclaw dashboard --no-open` to get the current URL with token.
 
-9. **Device pairing vs Authentik**: OpenClaw has its own device pairing system for the Control UI. Since we use Authentik for authentication at the nginx layer, we disable OpenClaw's device auth (`dangerouslyDisableDeviceAuth: true`) to avoid double authentication.
+9. **`openclaw config set` may not persist reliably**: The CLI command reports success but the JSON file may not be updated. Always verify changes by reading `~/.openclaw/openclaw.json` directly. For critical config changes, edit the JSON file with `nano` instead.
 
-10. **Mattermost pairing is separate**: Even with device auth disabled for the web UI, Mattermost users still need individual pairing approval via `openclaw pairing approve mattermost <CODE>`.
+10. **Device pairing vs Authentik**: OpenClaw has its own device pairing system for the Control UI. Since we use Authentik for authentication at the nginx layer, we disable OpenClaw's device auth (`dangerouslyDisableDeviceAuth: true`) to avoid double authentication.
 
-11. **sshd listens on port 2222 directly**: With host networking, there is no Docker port mapping. The Dockerfile configures sshd to listen on port 2222 via `sshd_config` (not the default port 22).
+11. **Mattermost pairing is separate**: Even with device auth disabled for the web UI, Mattermost users still need individual pairing approval via `openclaw pairing approve mattermost <CODE>`.
 
-12. **Gateway port binding**: The gateway binds to `127.0.0.1:18789` via `--bind loopback`. With host networking, this is the host's loopback — it is only accessible through nginx, never directly from the internet. No UFW rule needed for port 18789.
+12. **sshd listens on port 2222 directly**: With host networking, there is no Docker port mapping. The Dockerfile configures sshd to listen on port 2222 via `sshd_config` (not the default port 22).
 
-13. **UID conflicts in Ubuntu 24.04**: The Ubuntu 24.04 base image already has UID 1000 assigned to the `ubuntu` user. The Dockerfile must not force `--uid 1000` when creating the `openclaw` user.
+13. **Gateway port binding**: The gateway binds to `127.0.0.1:18789` via `--bind loopback`. With host networking, this is the host's loopback — it is only accessible through nginx, never directly from the internet. No UFW rule needed for port 18789.
 
-14. **HTTP-only nginx first for certbot**: When setting up from scratch, deploy an HTTP-only nginx config first (just ACME challenge + redirect). Issue the cert, then deploy the full HTTPS config. Nginx won't start if it references cert files that don't exist yet.
+14. **UID conflicts in Ubuntu 24.04**: The Ubuntu 24.04 base image already has UID 1000 assigned to the `ubuntu` user. The Dockerfile must not force `--uid 1000` when creating the `openclaw` user.
 
-15. **Gateway config persists across rebuilds**: Since `~/.openclaw/` is inside the bind-mounted home directory, gateway configuration survives container rebuilds. You only need to configure `auth.mode`, `allowedOrigins`, etc. once.
+15. **HTTP-only nginx first for certbot**: When setting up from scratch, deploy an HTTP-only nginx config first (just ACME challenge + redirect). Issue the cert, then deploy the full HTTPS config. Nginx won't start if it references cert files that don't exist yet.
 
-16. **Gateway rate-limits failed auth attempts**: If the browser repeatedly fails to authenticate (e.g., stale token), the gateway will start rejecting with "too many failed authentication attempts". Restart the container to clear the rate limit.
+16. **Gateway config persists across rebuilds**: Since `~/.openclaw/` is inside the bind-mounted home directory, gateway configuration survives container rebuilds. You only need to configure `auth.mode`, `allowedOrigins`, etc. once.
 
-17. **Use `nohup` in entrypoint for gateway process**: The gateway background process started via `su - openclaw -c '... &'` may not detach properly without `nohup`. The entrypoint uses `nohup` to ensure the gateway survives as a background process while sshd runs in the foreground.
+17. **Gateway rate-limits failed auth attempts**: If the browser repeatedly fails to authenticate (e.g., stale token), the gateway will start rejecting with "too many failed authentication attempts". Restart the container to clear the rate limit.
+
+18. **Use `nohup` in entrypoint for gateway process**: The gateway background process started via `su - openclaw -c '... &'` may not detach properly without `nohup`. The entrypoint uses `nohup` to ensure the gateway survives as a background process while sshd runs in the foreground.

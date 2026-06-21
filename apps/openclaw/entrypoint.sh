@@ -18,9 +18,17 @@ if [ -f /tmp/authorized_keys ] && [ -s /tmp/authorized_keys ]; then
     chmod 600 /home/openclaw/.ssh/authorized_keys
 fi
 
+# Ensure Homebrew shellenv is available in all shell types (bind mount overwrites image defaults)
+for f in /home/openclaw/.bashrc /home/openclaw/.profile /home/openclaw/.bash_profile; do
+    if ! grep -q 'linuxbrew' "$f" 2>/dev/null; then
+        echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> "$f"
+        chown openclaw:openclaw "$f"
+    fi
+done
+
 # Start OpenClaw gateway in background as openclaw user
 mkdir -p /tmp/openclaw
 chown openclaw:openclaw /tmp/openclaw
-su - openclaw -c 'export PATH="/home/openclaw/.npm-global/bin:$PATH" && nohup openclaw gateway --port 18789 --bind loopback >> /tmp/openclaw/gateway.log 2>&1 &'
+su - openclaw -c 'export PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/home/openclaw/.npm-global/bin:$PATH" && nohup openclaw gateway --port 18789 --bind loopback >> /tmp/openclaw/gateway.log 2>&1 &'
 
 exec /usr/sbin/sshd -D -e

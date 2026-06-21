@@ -19,6 +19,18 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 # Enable corepack and install pnpm
 RUN corepack enable && corepack prepare pnpm@latest --activate
 
+# Additional packages for plugin support and native compilation
+RUN apt-get update && apt-get install -y \
+    file procps locales unzip \
+    pkg-config libssl-dev \
+    python3-venv \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Generate UTF-8 locale (required by Homebrew and many tools)
+RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen
+ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+
 # SSH configuration (port 2222, host network mode)
 RUN mkdir -p /run/sshd \
     && sed -i 's/^#Port 22$/Port 2222/' /etc/ssh/sshd_config \
@@ -33,6 +45,22 @@ RUN useradd -m -s /bin/bash openclaw \
     && mkdir -p /home/openclaw/.ssh \
     && chown openclaw:openclaw /home/openclaw/.ssh \
     && chmod 700 /home/openclaw/.ssh
+
+# Install Homebrew (Linuxbrew) as openclaw user — brew refuses to run as root
+USER openclaw
+RUN NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+    && echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> /home/openclaw/.bashrc \
+    && echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> /home/openclaw/.profile
+USER root
+
+# Homebrew environment (persists for all users and layers)
+ENV HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew \
+    HOMEBREW_CELLAR=/home/linuxbrew/.linuxbrew/Cellar \
+    HOMEBREW_REPOSITORY=/home/linuxbrew/.linuxbrew/Homebrew
+ENV PATH="${HOMEBREW_PREFIX}/bin:${HOMEBREW_PREFIX}/sbin:${PATH}"
+
+# Install Go via Homebrew (needed by gogcli and other Go-based plugins)
+RUN su - openclaw -c 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)" && brew install go && brew cleanup'
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
