@@ -11,6 +11,8 @@
 shared/renew-all-certs.log
 shared/backup-postgres-to-s3.env
 shared/backup-logs/
+shared/cert-health-logs/
+shared/*.bak.*
 apps/postgres/backups/
 
 # Proxy

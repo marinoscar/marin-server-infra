@@ -44,6 +44,7 @@ docker logs --tail 100 <container>
 
 # Certificate renewal (runs via cron)
 /opt/infra/shared/renew-all-certs.sh
+/opt/infra/shared/check-cert-health.sh         # Verify served certs (safety net; also runs nightly)
 
 # MarinApp installation
 /opt/infra/apps/marinapp/install-marinapp.sh
