@@ -65,3 +65,14 @@ apps/mattermost/logs/
 
 # Guacamole
 apps/guacamole/guacamole-home/
+
+# Per-app runtime data / state (cloned repos, deploy logs, update markers — never commit)
+apps/*/repo/
+apps/*/logs/
+apps/*/.update-state
+apps/*/*-backup.log
+
+# LibreChat runtime data + secret-bearing searxng config
+apps/librechat/data-meili/
+apps/librechat/data-mongo/
+apps/librechat/searxng/
