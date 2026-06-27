@@ -14,6 +14,7 @@ Quick reference for all applications running on this server.
 | 🤖 | **LibreChat** | AI chat interface supporting multiple providers (bring your own API keys) | [chat.marin.cr](https://chat.marin.cr) |
 | 📋 | **Clipboard** | Universal clipboard for sharing text, files, and media across devices | [clipboard.marin.cr](https://clipboard.marin.cr) |
 | 🐚 | **ShellKeep** | SSH connection manager and web terminal (React + NestJS) | [shellkeep.marin.cr](https://shellkeep.marin.cr) |
+| 📸 | **MemoriaHub** | Media management platform — photos & videos with OAuth, albums, AI tagging (React + NestJS) | [memoriahub.marin.cr](https://memoriahub.marin.cr) |
 | 🖥️ | **Guacamole** | Remote desktop gateway (RDP to home devices via Tailscale) | [remote.marin.cr](https://remote.marin.cr) |
 | 🦞 | **OpenClaw** | AI assistant dev container (SSH access, Node.js 24 + pnpm) | `ssh -p 2222 openclaw@openclaw.marin.cr` |
 | 🛡️ | **CrowdSec** | Intrusion detection and prevention system (host-level, no web UI) | — |

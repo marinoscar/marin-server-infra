@@ -89,6 +89,7 @@ These preferences are documented in `docs/server-setup.md`:
 | Mattermost | 8065 | team.marin.cr |
 | LibreChat | 3080 | chat.marin.cr |
 | ShellKeep | 8323 | shellkeep.marin.cr |
+| MemoriaHub | 8328 | memoriahub.marin.cr |
 | OpenClaw SSH | 2222 (SSH) | openclaw.marin.cr |
 | Neo4j Browser | 7474 | graph.marin.cr |
 | Neo4j Bolt | 7687 (TLS) | Direct (neo4j+s://graph.marin.cr:7687) |
