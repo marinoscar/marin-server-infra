@@ -19,7 +19,10 @@
 #                             5. Build the Docker images
 #                             6. Run Prisma migrations AND seed (creates roles,
 #                                permissions, and the initial admin)
-#                             7. Start all services and verify health
+#                             7. Start all services
+#                             8. Publish externally: install the VPS proxy vhost,
+#                                issue the Let's Encrypt cert, reload the proxy
+#                                (skip with --skip-proxy), then verify health
 #
 #   UPDATE   (already installed) → delegates to ./update.sh, which pulls the
 #                           latest code, rebuilds, runs migrations (no seed),
@@ -39,7 +42,8 @@
 #                        the required keys and exit (CI-friendly).
 #   --skip-validate      Skip the .env validation pass (Postgres/S3/secret checks).
 #   --no-cache           Passed through to ./update.sh in UPDATE mode.
-#   --skip-proxy         Passed through to ./update.sh in UPDATE mode.
+#   --skip-proxy         Skip the VPS proxy + TLS step (INSTALL mode) and pass
+#                        through to ./update.sh in UPDATE mode.
 #   --help, -h           Show this help.
 #
 # Prerequisites:
@@ -64,10 +68,24 @@ ENV_FILE="${MEMORIAHUB_DIR}/.env"
 ENV_EXAMPLE="${REPO_DIR}/infra/compose/.env.example"
 COMPOSE_FILE="${MEMORIAHUB_DIR}/compose.yml"
 
+# VPS reverse proxy + TLS (Let's Encrypt) — used to publish the app externally
+PROXY_DIR="/opt/infra/proxy"
+PROXY_CONF_DST="${PROXY_DIR}/nginx/conf.d/memoriahub.conf"
+PROXY_WEBROOT="${PROXY_DIR}/webroot"           # mounted into proxy as /var/www/certbot
+LETSENCRYPT_DIR="${PROXY_DIR}/letsencrypt"     # mounted into proxy as /etc/letsencrypt
+CERT_EMAIL="oscar@marin.cr"                    # only used when registering a new ACME account
+
+# The app's production image (apps/api/Dockerfile) does NOT copy prisma.config.ts,
+# but Prisma 7 reads the datasource url from that file. The running app is fine
+# (it sets DATABASE_URL programmatically), but the Prisma CLI used for migrate/seed
+# needs the config — so we bind-mount it for those one-off `compose run` commands.
+PRISMA_CONFIG_SRC="${REPO_DIR}/apps/api/prisma.config.ts"
+
 # Options / mode
 FORCE_MODE=""            # "", "install", or "update"
 NON_INTERACTIVE=false
 SKIP_VALIDATE=false
+SKIP_PROXY=false
 PASSTHRU=()              # forwarded to update.sh in UPDATE mode
 
 log()  { echo "[memoriahub] $*"; }
@@ -76,7 +94,8 @@ warn() { echo "  [WARN]  $*"; }
 fail() { echo "  [FAIL]  $*"; }
 
 show_help() {
-    sed -n '2,55p' "$0" | sed 's/^# \{0,1\}//'
+    # Print the header comment block (everything up to `set -euo pipefail`).
+    sed -n '2,/^set -euo pipefail/{/^set -euo pipefail/d;p;}' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------------------
@@ -89,7 +108,7 @@ for arg in "$@"; do
         --non-interactive) NON_INTERACTIVE=true ;;
         --skip-validate)   SKIP_VALIDATE=true ;;
         --no-cache)        PASSTHRU+=("--no-cache") ;;
-        --skip-proxy)      PASSTHRU+=("--skip-proxy") ;;
+        --skip-proxy)      SKIP_PROXY=true; PASSTHRU+=("--skip-proxy") ;;
         --help|-h)         show_help; exit 0 ;;
         *)                 log "Unknown option: ${arg}"; show_help; exit 1 ;;
     esac
@@ -175,6 +194,7 @@ print_required_keys() {
     log "    POSTGRES_SSL=true"
     log "    JWT_SECRET (openssl rand -base64 32)"
     log "    COOKIE_SECRET (openssl rand -base64 32)"
+    log "    SECRETS_ENCRYPTION_KEY (openssl rand -base64 32; base64 of exactly 32 bytes)"
     log "    GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET"
     log "    GOOGLE_CALLBACK_URL=https://${DOMAIN}/api/auth/google/callback"
     log "    INITIAL_ADMIN_EMAIL=you@example.com"
@@ -193,7 +213,7 @@ run_env_wizard() {
     log ""
 
     local APP_URL POSTGRES_HOST POSTGRES_PORT POSTGRES_DB POSTGRES_USER
-    local POSTGRES_PASSWORD POSTGRES_SSL JWT_SECRET COOKIE_SECRET
+    local POSTGRES_PASSWORD POSTGRES_SSL JWT_SECRET COOKIE_SECRET SECRETS_ENCRYPTION_KEY
     local GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GOOGLE_CALLBACK_URL
     local INITIAL_ADMIN_EMAIL STORAGE_PROVIDER S3_BUCKET S3_REGION S3_ENDPOINT
     local AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY MAX_FILE_SIZE GEO_PROVIDER
@@ -230,14 +250,25 @@ run_env_wizard() {
     echo
 
     # --- Secrets ---
+    # SECRETS_ENCRYPTION_KEY is the AES-256-GCM key used to encrypt provider
+    # credentials at rest (storage / AI / face / geo). The API rejects it unless
+    # it base64-decodes to EXACTLY 32 bytes, so we generate/validate it strictly.
     echo "  --- Secrets ---"
-    if confirm "Auto-generate JWT_SECRET and COOKIE_SECRET with openssl?" "y"; then
+    if confirm "Auto-generate JWT_SECRET, COOKIE_SECRET, and SECRETS_ENCRYPTION_KEY with openssl?" "y"; then
         JWT_SECRET="$(openssl rand -base64 32)"
         COOKIE_SECRET="$(openssl rand -base64 32)"
-        echo "  Generated JWT_SECRET and COOKIE_SECRET (32 bytes each)."
+        SECRETS_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+        echo "  Generated JWT_SECRET, COOKIE_SECRET, and SECRETS_ENCRYPTION_KEY."
     else
         ask_secret JWT_SECRET    "JWT secret (min 32 chars)"    32
         ask_secret COOKIE_SECRET "Cookie secret (min 32 chars)" 32
+        while true; do
+            ask_secret SECRETS_ENCRYPTION_KEY "Secrets encryption key (base64 of 32 bytes; openssl rand -base64 32)"
+            if [ "$(printf '%s' "${SECRETS_ENCRYPTION_KEY}" | base64 -d 2>/dev/null | wc -c)" = "32" ]; then
+                break
+            fi
+            echo "    ! must be base64 that decodes to exactly 32 bytes — generate with: openssl rand -base64 32"
+        done
     fi
     echo
 
@@ -292,6 +323,9 @@ POSTGRES_SSL=${POSTGRES_SSL}
 # --- Secrets ---
 JWT_SECRET=${JWT_SECRET}
 COOKIE_SECRET=${COOKIE_SECRET}
+# AES-256-GCM key (base64, 32 bytes) for encrypting stored provider credentials
+# (storage / AI / face / geo). Generate with: openssl rand -base64 32
+SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY}
 
 # --- Google OAuth ---
 GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
@@ -313,7 +347,6 @@ ALLOWED_MIME_TYPES=image/*,video/*
 GEO_PROVIDER=${GEO_PROVIDER}
 
 # --- Optional features (disabled by default; see infra/compose/.env.example) ---
-# SECRETS_ENCRYPTION_KEY=   # required only if AI tagging / face recognition is enabled
 # OTEL_ENABLED=false
 EOF
     umask 022
@@ -324,7 +357,7 @@ EOF
     echo "    APP_URL=${APP_URL}"
     echo "    POSTGRES_HOST=${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB} (user=${POSTGRES_USER}, ssl=${POSTGRES_SSL})"
     echo "    POSTGRES_PASSWORD=********"
-    echo "    JWT_SECRET=********  COOKIE_SECRET=********"
+    echo "    JWT_SECRET=********  COOKIE_SECRET=********  SECRETS_ENCRYPTION_KEY=********"
     echo "    GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}"
     echo "    GOOGLE_CLIENT_SECRET=********"
     echo "    INITIAL_ADMIN_EMAIL=${INITIAL_ADMIN_EMAIL}"
@@ -352,7 +385,7 @@ validate_env() {
     local hard_fail=false
 
     local pg_host pg_port pg_db pg_user pg_pass pg_ssl
-    local jwt cookie bucket region endpoint akid asecret admin
+    local jwt cookie seckey bucket region endpoint akid asecret admin
     pg_host=$(read_env POSTGRES_HOST)
     pg_port=$(read_env POSTGRES_PORT)
     pg_db=$(read_env POSTGRES_DB)
@@ -361,6 +394,7 @@ validate_env() {
     pg_ssl=$(read_env POSTGRES_SSL)
     jwt=$(read_env JWT_SECRET)
     cookie=$(read_env COOKIE_SECRET)
+    seckey=$(read_env SECRETS_ENCRYPTION_KEY)
     bucket=$(read_env S3_BUCKET)
     region=$(read_env S3_REGION)
     endpoint=$(read_env S3_ENDPOINT)
@@ -371,6 +405,19 @@ validate_env() {
     # --- Secret strength ---
     if [ "${#jwt}" -ge 32 ]; then pass "JWT_SECRET length OK"; else warn "JWT_SECRET is shorter than 32 chars"; fi
     if [ "${#cookie}" -ge 32 ]; then pass "COOKIE_SECRET length OK"; else warn "COOKIE_SECRET is shorter than 32 chars"; fi
+
+    # --- Secrets encryption key (must base64-decode to EXACTLY 32 bytes) ---
+    # The API throws "SECRETS_ENCRYPTION_KEY must be a base64-encoded 32-byte key"
+    # the first time it encrypts a stored credential, so we treat this as a hard fail.
+    local seckey_bytes
+    seckey_bytes=$(printf '%s' "${seckey}" | base64 -d 2>/dev/null | wc -c)
+    if [ "${seckey_bytes}" = "32" ]; then
+        pass "SECRETS_ENCRYPTION_KEY is a valid 32-byte base64 key"
+    else
+        fail "SECRETS_ENCRYPTION_KEY must base64-decode to 32 bytes (got ${seckey_bytes})."
+        echo "        → generate with: openssl rand -base64 32"
+        hard_fail=true
+    fi
 
     # --- Admin email format ---
     if [[ "${admin}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]; then
@@ -448,7 +495,7 @@ generate_compose() {
 #
 # Services:
 #   nginx  internal reverse proxy, binds 127.0.0.1:${HOST_PORT} (the VPS proxy routes here)
-#   api    NestJS + Fastify backend (connects to PostgreSQL over SSL via .env)
+#   api    NestJS + Fastify backend (connects to PostgreSQL via .env; SSL per POSTGRES_SSL)
 #   web    React frontend, static build served by nginx on :80
 # CompreFace face-detection is intentionally omitted; it is opt-in later.
 # =============================================================================
@@ -588,6 +635,81 @@ NGINX_EOF
 }
 
 # ---------------------------------------------------------------------------
+# Prisma CLI runner — runs a one-off `npm run <script>` in the api service with
+# prisma.config.ts bind-mounted (the production image omits it; see note above).
+# Usage: prisma_cli prisma:migrate   /   prisma_cli prisma:seed
+# ---------------------------------------------------------------------------
+prisma_cli() {
+    local script="$1"
+    local mount=()
+    if [ -f "${PRISMA_CONFIG_SRC}" ]; then
+        mount=(-v "${PRISMA_CONFIG_SRC}:/app/prisma.config.ts:ro")
+    else
+        warn "prisma.config.ts not found at ${PRISMA_CONFIG_SRC};"
+        warn "Prisma CLI may fail. Has the repo been cloned?"
+    fi
+    docker compose run --rm -T ${mount[@]+"${mount[@]}"} api npm run "${script}"
+}
+
+# ---------------------------------------------------------------------------
+# Publish externally — install the VPS proxy vhost + issue/serve the TLS cert.
+# Idempotent: skips cert issuance if one already exists; rolls back the vhost if
+# the shared proxy fails validation so we never leave it in a broken state.
+# ---------------------------------------------------------------------------
+setup_proxy_and_tls() {
+    if [ "${SKIP_PROXY}" = "true" ]; then
+        log "  Skipping proxy + TLS setup (--skip-proxy)."
+        return 0
+    fi
+    if [ ! -d "$(dirname "${PROXY_CONF_DST}")" ]; then
+        warn "VPS proxy not found at ${PROXY_DIR} — skipping proxy + TLS."
+        warn "Set up the proxy, then copy ${MEMORIAHUB_DIR}/memoriahub.conf manually."
+        return 0
+    fi
+
+    # 1. Issue the TLS certificate FIRST. The vhost references it, so nginx -t
+    #    fails if it is missing. The proxy's default :80 server already serves
+    #    /.well-known/acme-challenge from /var/www/certbot, so no vhost is needed
+    #    yet. We use the same certbot Docker image + container paths as the
+    #    nightly renew script so the renewal config it writes stays consistent.
+    if [ -f "${LETSENCRYPT_DIR}/live/${DOMAIN}/fullchain.pem" ]; then
+        pass "TLS certificate already present for ${DOMAIN}."
+    else
+        log "  Issuing Let's Encrypt certificate for ${DOMAIN}..."
+        if docker run --rm \
+                -v "${LETSENCRYPT_DIR}:/etc/letsencrypt" \
+                -v "${PROXY_WEBROOT}:/var/www/certbot" \
+                certbot/certbot:latest certonly \
+                    --webroot -w /var/www/certbot \
+                    -d "${DOMAIN}" \
+                    --key-type ecdsa \
+                    --non-interactive --agree-tos -m "${CERT_EMAIL}"; then
+            pass "Certificate issued for ${DOMAIN}."
+        else
+            fail "Certificate issuance failed for ${DOMAIN}."
+            warn "Check DNS (A record -> this host) and that proxy-nginx serves :80, then re-run."
+            return 0
+        fi
+    fi
+
+    # 2. Install the vhost into the shared proxy.
+    cp "${MEMORIAHUB_DIR}/memoriahub.conf" "${PROXY_CONF_DST}"
+    log "  Proxy vhost copied to ${PROXY_CONF_DST}."
+
+    # 3. Validate + reload. If validation fails, remove the vhost we just added so
+    #    the running proxy keeps serving every other site unchanged.
+    if docker exec proxy-nginx nginx -t >/dev/null 2>&1; then
+        docker exec proxy-nginx nginx -s reload >/dev/null 2>&1
+        pass "VPS proxy validated and reloaded."
+    else
+        fail "Proxy nginx validation FAILED — rolling back the memoriahub vhost."
+        rm -f "${PROXY_CONF_DST}"
+        docker exec proxy-nginx nginx -t 2>&1 | sed 's/^/        /' || true
+        warn "The proxy was left unchanged. Fix the issue and re-run."
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Mode detection
 # ---------------------------------------------------------------------------
 detect_mode() {
@@ -680,7 +802,7 @@ generate_proxy_conf
 
 # --- Step 5: build images, run migrations + seed ---
 log ""
-log "[5/7] Building images..."
+log "[5/8] Building images..."
 cd "${MEMORIAHUB_DIR}"
 docker compose build
 log "  Images built."
@@ -688,25 +810,26 @@ log "  Images built."
 log ""
 log "  Running database migrations..."
 # prisma-env.js (apps/api/scripts/) builds DATABASE_URL from the POSTGRES_* vars
-# in .env (including sslmode=require when POSTGRES_SSL=true), so we just call the
-# package script — no manual connection string needed.
-docker compose run --rm -T api npm run prisma:migrate
+# in .env (including sslmode=require when POSTGRES_SSL=true). prisma_cli also
+# bind-mounts prisma.config.ts (which the production image omits) so the CLI can
+# read the datasource url under Prisma 7.
+prisma_cli prisma:migrate
 log "  Migrations complete."
 
 log "  Running database seed (roles, permissions, initial admin)..."
-docker compose run --rm -T api npm run prisma:seed
+prisma_cli prisma:seed
 log "  Seed complete."
 
 # --- Step 6: start services ---
 log ""
-log "[6/7] Starting all services..."
+log "[6/8] Starting all services..."
 docker compose up -d
 log "  All containers started."
 
 log "  Waiting for API to initialize..."
 API_READY=false
 for _ in $(seq 1 60); do
-    if docker exec memoriahub-api wget -qO- http://localhost:3000/api/health/live >/dev/null 2>&1; then
+    if docker exec memoriahub-api wget -qO- http://127.0.0.1:3000/api/health/live >/dev/null 2>&1; then
         API_READY=true
         break
     fi
@@ -717,18 +840,34 @@ if [ "${API_READY}" = "false" ]; then
     log "  Check logs: docker compose -f ${COMPOSE_FILE} logs api"
 fi
 
-# --- Step 7: verify health ---
+# --- Step 7: publish externally (proxy vhost + TLS cert) ---
 log ""
-log "[7/7] Verifying services..."
+log "[7/8] Publishing externally (VPS proxy + TLS)..."
+setup_proxy_and_tls
+
+# --- Step 8: verify health ---
+log ""
+log "[8/8] Verifying services..."
 sleep 3
 RUNNING=$(docker compose ps --format '{{.Name}}' 2>/dev/null | wc -l)
 log "  Containers running: ${RUNNING}"
-API_STATUS=$(docker exec memoriahub-api wget -qO- http://localhost:3000/api/health/live 2>/dev/null || echo "FAIL")
+API_STATUS=$(docker exec memoriahub-api wget -qO- http://127.0.0.1:3000/api/health/live 2>/dev/null || echo "FAIL")
 if echo "${API_STATUS}" | grep -qi "ok\|status\|healthy"; then
-    log "  API health:    OK"
+    log "  API health (internal):  OK"
 else
-    log "  API health:    WARN (response: ${API_STATUS})"
-    log "                 Check: docker compose -f ${COMPOSE_FILE} logs api"
+    log "  API health (internal):  WARN (response: ${API_STATUS})"
+    log "                          Check: docker compose -f ${COMPOSE_FILE} logs api"
+fi
+
+# External end-to-end check through the VPS proxy over HTTPS (best-effort).
+if [ "${SKIP_PROXY}" != "true" ] && command -v curl >/dev/null 2>&1; then
+    EXT_STATUS=$(curl -sS --max-time 15 "https://${DOMAIN}/api/health/live" 2>/dev/null || echo "FAIL")
+    if echo "${EXT_STATUS}" | grep -qi '"status":"ok"\|ok'; then
+        log "  API health (https):     OK (https://${DOMAIN})"
+    else
+        log "  API health (https):     WARN — not reachable via https yet."
+        log "                          Check DNS, the proxy vhost, and the TLS cert."
+    fi
 fi
 
 log ""
@@ -739,24 +878,21 @@ log ""
 log " Internal URL: http://127.0.0.1:${HOST_PORT}"
 log " External URL: https://${DOMAIN}"
 log ""
-log " If this is the FIRST install, complete these steps:"
+if [ "${SKIP_PROXY}" = "true" ]; then
+    log " Proxy + TLS were SKIPPED (--skip-proxy). To publish externally:"
+    log "   1. cp ${MEMORIAHUB_DIR}/memoriahub.conf ${PROXY_CONF_DST}"
+    log "   2. Issue the cert (same image/paths as the nightly renew script):"
+    log "      docker run --rm -v ${LETSENCRYPT_DIR}:/etc/letsencrypt \\"
+    log "        -v ${PROXY_WEBROOT}:/var/www/certbot certbot/certbot:latest \\"
+    log "        certonly --webroot -w /var/www/certbot -d ${DOMAIN} --key-type ecdsa"
+    log "   3. docker exec proxy-nginx nginx -t && docker exec proxy-nginx nginx -s reload"
+    log ""
+fi
+log " Remaining manual step (one-time):"
+log "   • Register the Google OAuth redirect URI in Google Cloud Console:"
+log "       https://${DOMAIN}/api/auth/google/callback"
 log ""
-log "   1. Copy the proxy config to the VPS reverse proxy:"
-log "      cp ${MEMORIAHUB_DIR}/memoriahub.conf /opt/infra/proxy/nginx/conf.d/"
-log ""
-log "   2. Issue the TLS certificate:"
-log "      certbot certonly --webroot -w /opt/infra/proxy/webroot \\"
-log "        -d ${DOMAIN} --config-dir /opt/infra/proxy/letsencrypt"
-log ""
-log "   3. Reload the VPS proxy:"
-log "      docker exec proxy-nginx nginx -t"
-log "      docker exec proxy-nginx nginx -s reload"
-log ""
-log "   4. Register the Google OAuth redirect URI:"
-log "      https://${DOMAIN}/api/auth/google/callback"
-log ""
-log "   5. Verify:"
-log "      curl https://${DOMAIN}/api/health/live"
+log " Verify:  curl https://${DOMAIN}/api/health/live"
 log ""
 log " To update later, just run ./install-memoriahub.sh again (it auto-detects"
 log " UPDATE mode) or ./update.sh directly."

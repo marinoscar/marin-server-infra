@@ -44,6 +44,12 @@ PROXY_CONF_DST="/opt/infra/proxy/nginx/conf.d/memoriahub.conf"
 BRANCH="main"
 DOMAIN="memoriahub.marin.cr"
 
+# The production image (apps/api/Dockerfile) does NOT copy prisma.config.ts, but
+# Prisma 7 reads the datasource url from it. The running app sets DATABASE_URL
+# programmatically so it is unaffected, but the migrate CLI needs the config —
+# so we bind-mount it for the one-off `compose run` below.
+PRISMA_CONFIG_SRC="${REPO_DIR}/apps/api/prisma.config.ts"
+
 # Options
 NO_CACHE=false
 SKIP_PROXY=false
@@ -173,9 +179,27 @@ log "[3/6] Running database migrations..."
 docker compose -f "${COMPOSE_FILE}" stop api 2>/dev/null || true
 
 # prisma-env.js builds DATABASE_URL from the POSTGRES_* vars in .env (the api
-# service has env_file: .env), so the npm script is all that is needed.
-docker compose -f "${COMPOSE_FILE}" run --rm -T api npm run prisma:migrate 2>&1 \
+# service has env_file: .env). We also bind-mount prisma.config.ts (which the
+# production image omits) so the Prisma 7 CLI can read the datasource url.
+PRISMA_MOUNT=()
+if [ -f "${PRISMA_CONFIG_SRC}" ]; then
+    PRISMA_MOUNT=(-v "${PRISMA_CONFIG_SRC}:/app/prisma.config.ts:ro")
+else
+    log "    WARNING: prisma.config.ts not found at ${PRISMA_CONFIG_SRC}; migrate may fail."
+fi
+docker compose -f "${COMPOSE_FILE}" run --rm -T ${PRISMA_MOUNT[@]+"${PRISMA_MOUNT[@]}"} \
+    api npm run prisma:migrate 2>&1 \
     | while IFS= read -r line; do log "    ${line}"; done
+
+# The pipe above masks the migrate exit code from `set -e`; check it explicitly so
+# a failed migration aborts the update instead of restarting on a stale schema.
+if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+    log "  ERROR: database migrations FAILED. Aborting update."
+    log "  Restarting the previous API container (old image, matches the un-migrated"
+    log "  DB) to avoid downtime, then exiting. Fix the issue and re-run ./update.sh."
+    docker compose -f "${COMPOSE_FILE}" start api >/dev/null 2>&1 || true
+    exit 1
+fi
 
 log "  Migrations complete."
 
@@ -195,7 +219,7 @@ log "  Nginx restarted."
 log "  Waiting for API to initialize..."
 API_READY=false
 for _ in $(seq 1 60); do
-    if docker exec memoriahub-api wget -qO- http://localhost:3000/api/health/live >/dev/null 2>&1; then
+    if docker exec memoriahub-api wget -qO- http://127.0.0.1:3000/api/health/live >/dev/null 2>&1; then
         API_READY=true
         break
     fi
@@ -248,7 +272,7 @@ sleep 3
 RUNNING=$(docker compose -f "${COMPOSE_FILE}" ps --format '{{.Name}}' 2>/dev/null | wc -l)
 log "  Containers running: ${RUNNING}"
 
-API_STATUS=$(docker exec memoriahub-api wget -qO- http://localhost:3000/api/health/live 2>/dev/null || echo "FAIL")
+API_STATUS=$(docker exec memoriahub-api wget -qO- http://127.0.0.1:3000/api/health/live 2>/dev/null || echo "FAIL")
 if echo "${API_STATUS}" | grep -qi "ok\|status\|healthy"; then
     log "  API health:    OK"
 else
