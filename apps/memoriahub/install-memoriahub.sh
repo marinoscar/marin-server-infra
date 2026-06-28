@@ -494,10 +494,11 @@ generate_compose() {
 # Do not edit manually — re-run the installer (or --reinstall) to regenerate.
 #
 # Services:
-#   nginx  internal reverse proxy, binds 127.0.0.1:${HOST_PORT} (the VPS proxy routes here)
-#   api    NestJS + Fastify backend (connects to PostgreSQL via .env; SSL per POSTGRES_SSL)
-#   web    React frontend, static build served by nginx on :80
-# CompreFace face-detection is intentionally omitted; it is opt-in later.
+#   nginx           internal reverse proxy, binds 127.0.0.1:${HOST_PORT} (the VPS proxy routes here)
+#   api             NestJS + Fastify backend (connects to PostgreSQL via .env; SSL per POSTGRES_SSL)
+#   web             React frontend, static build served by nginx on :80
+#   compreface-core keyless face-detection sidecar; the API reaches it at
+#                   http://compreface-core:3000 over the shared internal network.
 # =============================================================================
 
 services:
@@ -552,6 +553,28 @@ services:
       resources:
         limits:
           memory: 128M
+    networks:
+      - memoriahub-internal
+
+  # ---------------------------------------------------------------------------
+  # CompreFace core — keyless face-detection sidecar (the \`compreface\` face
+  # provider). Stateless: no database, no API key, no admin UI, no exposed
+  # ports. The API resolves it by name at http://compreface-core:3000
+  # (override with FACE_COMPREFACE_URL). Health endpoint: GET /status.
+  # Both this container and the API must share memoriahub-internal so the name
+  # resolves — that is what makes face detection's "Test connection" work.
+  # ---------------------------------------------------------------------------
+  compreface-core:
+    container_name: compreface-core
+    image: exadel/compreface-core:1.2.0-mobilenet
+    environment:
+      - UWSGI_PROCESSES=1   # single worker — tuned for a shared-CPU VPS
+      - UWSGI_THREADS=1
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
     networks:
       - memoriahub-internal
 
@@ -857,6 +880,25 @@ if echo "${API_STATUS}" | grep -qi "ok\|status\|healthy"; then
 else
     log "  API health (internal):  WARN (response: ${API_STATUS})"
     log "                          Check: docker compose -f ${COMPOSE_FILE} logs api"
+fi
+
+# CompreFace sidecar — the face-detection backend. Verify the api can resolve
+# and reach it on the shared network (this is what the Face Settings "Test
+# connection" exercises). Best-effort: it loads ML models on boot, so allow a
+# short grace window before warning.
+CF_OK=false
+for _ in $(seq 1 20); do
+    if docker exec memoriahub-api wget -qO- http://compreface-core:3000/status 2>/dev/null | grep -qi '"status":"ok"'; then
+        CF_OK=true
+        break
+    fi
+    sleep 3
+done
+if [ "${CF_OK}" = "true" ]; then
+    log "  CompreFace:             OK (api -> http://compreface-core:3000)"
+else
+    log "  CompreFace:             WARN — api could not reach the face-detection sidecar."
+    log "                          Check: docker compose -f ${COMPOSE_FILE} logs compreface-core"
 fi
 
 # External end-to-end check through the VPS proxy over HTTPS (best-effort).

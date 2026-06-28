@@ -279,6 +279,22 @@ else
     log "  API health:    WARN (${API_STATUS})"
 fi
 
+# CompreFace sidecar — face-detection backend. The api reaches it by name at
+# http://compreface-core:3000 over the shared network. `up -d` above starts it
+# only if it is defined in compose.yml; a compose.yml generated before the
+# sidecar was added will not have it, so guide the operator to regenerate.
+if docker compose -f "${COMPOSE_FILE}" config --services 2>/dev/null | grep -qx "compreface-core"; then
+    if docker exec memoriahub-api wget -qO- http://compreface-core:3000/status 2>/dev/null | grep -qi '"status":"ok"'; then
+        log "  CompreFace:    OK"
+    else
+        log "  CompreFace:    WARN — not reachable yet (it loads models on boot)."
+        log "                 Check: docker compose -f ${COMPOSE_FILE} logs compreface-core"
+    fi
+else
+    log "  CompreFace:    MISSING from compose.yml — face detection will not work."
+    log "                 Regenerate it: ./install-memoriahub.sh --reinstall"
+fi
+
 # Save update state for reference
 cat > "${MEMORIAHUB_DIR}/.update-state" << EOF
 last_update=$(date -u '+%Y-%m-%dT%H:%M:%SZ')

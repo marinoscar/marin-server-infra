@@ -8,10 +8,11 @@
 # VPS. The live file lives at /opt/infra/apps/memoriahub/compose.yml.
 #
 # Services:
-#   nginx  internal reverse proxy, binds 127.0.0.1:8328 (the VPS proxy routes here)
-#   api    NestJS + Fastify backend (connects to PostgreSQL over SSL via .env)
-#   web    React frontend, static build served by nginx on :80
-# CompreFace face-detection is intentionally omitted; it is opt-in later.
+#   nginx           internal reverse proxy, binds 127.0.0.1:8328 (the VPS proxy routes here)
+#   api             NestJS + Fastify backend (connects to PostgreSQL over SSL via .env)
+#   web             React frontend, static build served by nginx on :80
+#   compreface-core keyless face-detection sidecar; the API reaches it at
+#                   http://compreface-core:3000 over the shared internal network.
 # =============================================================================
 
 services:
@@ -66,6 +67,28 @@ services:
       resources:
         limits:
           memory: 128M
+    networks:
+      - memoriahub-internal
+
+  # ---------------------------------------------------------------------------
+  # CompreFace core — keyless face-detection sidecar (the `compreface` face
+  # provider). Stateless: no database, no API key, no admin UI, no exposed
+  # ports. The API resolves it by name at http://compreface-core:3000
+  # (override with FACE_COMPREFACE_URL). Health endpoint: GET /status.
+  # Both this container and the API must share memoriahub-internal so the name
+  # resolves — that is what makes face detection's "Test connection" work.
+  # ---------------------------------------------------------------------------
+  compreface-core:
+    container_name: compreface-core
+    image: exadel/compreface-core:1.2.0-mobilenet
+    environment:
+      - UWSGI_PROCESSES=1   # single worker — tuned for a shared-CPU VPS
+      - UWSGI_THREADS=1
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
     networks:
       - memoriahub-internal
 
