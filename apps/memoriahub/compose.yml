@@ -39,8 +39,8 @@ services:
   api:
     container_name: memoriahub-api
     build:
-      context: ./repo/apps/api
-      dockerfile: Dockerfile
+      context: ./repo
+      dockerfile: apps/api/Dockerfile
       target: production
     env_file:
       - .env
@@ -59,8 +59,8 @@ services:
   web:
     container_name: memoriahub-web
     build:
-      context: ./repo/apps/web
-      dockerfile: Dockerfile
+      context: ./repo
+      dockerfile: apps/web/Dockerfile
       target: production
     restart: unless-stopped
     deploy:

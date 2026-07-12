@@ -183,7 +183,7 @@ docker compose -f "${COMPOSE_FILE}" stop api 2>/dev/null || true
 # production image omits) so the Prisma 7 CLI can read the datasource url.
 PRISMA_MOUNT=()
 if [ -f "${PRISMA_CONFIG_SRC}" ]; then
-    PRISMA_MOUNT=(-v "${PRISMA_CONFIG_SRC}:/app/prisma.config.ts:ro")
+    PRISMA_MOUNT=(-v "${PRISMA_CONFIG_SRC}:/app/apps/api/prisma.config.ts:ro")
 else
     log "    WARNING: prisma.config.ts not found at ${PRISMA_CONFIG_SRC}; migrate may fail."
 fi

@@ -525,8 +525,8 @@ services:
   api:
     container_name: memoriahub-api
     build:
-      context: ./repo/apps/api
-      dockerfile: Dockerfile
+      context: ./repo
+      dockerfile: apps/api/Dockerfile
       target: production
     env_file:
       - .env
@@ -545,8 +545,8 @@ services:
   web:
     container_name: memoriahub-web
     build:
-      context: ./repo/apps/web
-      dockerfile: Dockerfile
+      context: ./repo
+      dockerfile: apps/web/Dockerfile
       target: production
     restart: unless-stopped
     deploy:
@@ -666,7 +666,7 @@ prisma_cli() {
     local script="$1"
     local mount=()
     if [ -f "${PRISMA_CONFIG_SRC}" ]; then
-        mount=(-v "${PRISMA_CONFIG_SRC}:/app/prisma.config.ts:ro")
+        mount=(-v "${PRISMA_CONFIG_SRC}:/app/apps/api/prisma.config.ts:ro")
     else
         warn "prisma.config.ts not found at ${PRISMA_CONFIG_SRC};"
         warn "Prisma CLI may fail. Has the repo been cloned?"
