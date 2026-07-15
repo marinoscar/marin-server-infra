@@ -3,6 +3,12 @@ services:
     image: pgvector/pgvector:pg17
     container_name: infra-postgres
     restart: unless-stopped
+    # Raise shared memory (/dev/shm) above Docker's 64MB default. pgvector's
+    # parallel HNSW index builds allocate dynamic shared memory segments and hit
+    # "could not resize shared memory segment ... No space left on device" (SQLSTATE
+    # 53100) at 64MB - this took MemoriaHub's api down on 2026-07-15 during a
+    # migration. 1g leaves generous headroom for parallel index builds and queries.
+    shm_size: 1g
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
