@@ -42,6 +42,9 @@ services:
       context: ./repo
       dockerfile: apps/api/Dockerfile
       target: production
+      labels:
+        org.opencontainers.image.revision: ${GIT_SHA:-unknown}
+        org.opencontainers.image.created: ${BUILD_TIME:-unknown}
     env_file:
       - .env
     restart: unless-stopped
@@ -62,6 +65,9 @@ services:
       context: ./repo
       dockerfile: apps/web/Dockerfile
       target: production
+      labels:
+        org.opencontainers.image.revision: ${GIT_SHA:-unknown}
+        org.opencontainers.image.created: ${BUILD_TIME:-unknown}
     restart: unless-stopped
     deploy:
       resources:

@@ -528,6 +528,9 @@ services:
       context: ./repo
       dockerfile: apps/api/Dockerfile
       target: production
+      labels:
+        org.opencontainers.image.revision: \${GIT_SHA:-unknown}
+        org.opencontainers.image.created: \${BUILD_TIME:-unknown}
     env_file:
       - .env
     restart: unless-stopped
@@ -548,6 +551,9 @@ services:
       context: ./repo
       dockerfile: apps/web/Dockerfile
       target: production
+      labels:
+        org.opencontainers.image.revision: \${GIT_SHA:-unknown}
+        org.opencontainers.image.created: \${BUILD_TIME:-unknown}
     restart: unless-stopped
     deploy:
       resources:
@@ -827,6 +833,11 @@ generate_proxy_conf
 log ""
 log "[5/8] Building images..."
 cd "${MEMORIAHUB_DIR}"
+# Stamp images with the deployed commit + build time (OCI labels, see compose.yml
+# build.labels and verify-deployment.sh).
+export GIT_SHA="$(git -C "${REPO_DIR}" rev-parse --short HEAD)"
+export BUILD_TIME="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+log "  Stamping images: revision=${GIT_SHA} created=${BUILD_TIME}"
 docker compose build
 log "  Images built."
 

@@ -166,6 +166,14 @@ if [ "${NO_CACHE}" = "true" ]; then
     log "  (--no-cache: full rebuild)"
 fi
 
+# Stamp the built images with the deployed git commit + build time as OCI image
+# labels (org.opencontainers.image.revision/.created), consumed by compose.yml's
+# build.labels. This is what lets verify-deployment.sh and `docker inspect` report
+# exactly which commit a running container was built from — see verify-deployment.sh.
+export GIT_SHA="$(git -C "${REPO_DIR}" rev-parse --short HEAD)"
+export BUILD_TIME="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+log "  Stamping images: revision=${GIT_SHA} created=${BUILD_TIME}"
+
 docker compose -f "${COMPOSE_FILE}" build ${BUILD_ARGS}
 log "  Images rebuilt."
 
