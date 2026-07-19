@@ -13,12 +13,26 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    # Memory tuning (MemoriaHub issue #131, 2026-07-18): the instance was on
+    # stock defaults (shared_buffers 128MB, maintenance_work_mem 64MB,
+    # effective_cache_size 4GB), which makes large pgvector/HNSW bulk loads slow
+    # and risks repeating the July HNSW build failures. Values below are sized
+    # conservatively for this shared 23GB box (also hosts wellconnect ~9GB,
+    # authentik, vault, mattermost, nextcloud, etc.):
+    #   shared_buffers=2GB        - hold the HNSW working set in cache
+    #   maintenance_work_mem=1GB  - fast, safe HNSW index (re)builds
+    #   effective_cache_size=12GB - planner hint for the box's total page cache
+    # Changing shared_buffers requires a Postgres restart (recreate this
+    # container); it briefly drops all databases on infra-postgres.
     command: >
       postgres
       -c listen_addresses=*
       -c password_encryption=scram-sha-256
       -c log_line_prefix='%m [%p] [%h] '
       -c log_connections=on
+      -c shared_buffers=2GB
+      -c maintenance_work_mem=1GB
+      -c effective_cache_size=12GB
     ports:
       - "5432:5432"
     volumes:
