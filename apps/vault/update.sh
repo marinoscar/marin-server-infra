@@ -160,20 +160,34 @@ else
 fi
 log "  $SUBJECT"
 
-# What the running image was actually built from. This is the number that
-# matters, and the one the old script never looked at.
-DEPLOYED=$(dc images -q "$API_SERVICE" 2>/dev/null | head -1)
-if [[ -n "$DEPLOYED" ]]; then
-  IMG_EPOCH=$(docker image inspect "$DEPLOYED" --format '{{.Created}}' 2>/dev/null | xargs -I{} date -d {} +%s 2>/dev/null || echo 0)
-  COMMIT_EPOCH=$(git log -1 --format=%ct)
-  IMG_CREATED=$(docker image inspect "$DEPLOYED" --format '{{.Created}}' 2>/dev/null | cut -dT -f1)
-  log "  Running API image: ${DEPLOYED:0:12} (built $IMG_CREATED)"
-  if (( IMG_EPOCH > 0 && IMG_EPOCH < COMMIT_EPOCH )); then
-    AGE_DAYS=$(( (COMMIT_EPOCH - IMG_EPOCH) / 86400 ))
-    warn "the running image predates this commit by ~${AGE_DAYS} days -- it is serving OLD code"
+# What the running image was actually built from -- the number the old updater
+# never looked at.
+#
+# Everything here is diagnostic and must NEVER abort the run. It is wrapped in a
+# function called with `|| true` for that reason: an earlier version piped
+# `docker compose images` into `head -1`, and under `set -o pipefail` the SIGPIPE
+# from head closing the pipe early made the whole pipeline fail. That is a race,
+# so it survived two runs and then killed a deploy at the one step that cannot
+# affect correctness. No pipes into short-circuiting readers below.
+report_image_age() {
+  local imgs deployed created img_epoch commit_epoch age_days
+  imgs=$(dc images -q "$API_SERVICE" 2>/dev/null) || return 0
+  deployed=${imgs%%$'\n'*}
+  [[ -n "$deployed" ]] || return 0
+
+  created=$(docker image inspect "$deployed" --format '{{.Created}}' 2>/dev/null) || return 0
+  log "  Running API image: ${deployed:0:12} (built ${created%%T*})"
+
+  img_epoch=$(date -d "$created" +%s 2>/dev/null) || return 0
+  commit_epoch=$(git log -1 --format=%ct 2>/dev/null) || return 0
+  if (( img_epoch > 0 && img_epoch < commit_epoch )); then
+    age_days=$(( (commit_epoch - img_epoch) / 86400 ))
+    warn "the running image predates this commit by ~${age_days} days -- it is serving OLD code"
     warn "this is the condition the previous updater mistook for 'no code changes'"
   fi
-fi
+  return 0
+}
+report_image_age || true
 
 MIGRATIONS_IN_REPO=$(find apps/api/prisma/migrations -mindepth 1 -maxdepth 1 -type d | wc -l)
 log "  Migrations in this checkout: $MIGRATIONS_IN_REPO"
@@ -237,7 +251,11 @@ step "[5/8] Database migrations"
 MIG_OUT=$(dc run --rm --no-deps -T "$API_SERVICE" npm run prisma:migrate 2>&1 || true)
 echo "$MIG_OUT" | sed 's/^/[vault-update]     /'
 
-FOUND=$(echo "$MIG_OUT" | grep -oE '[0-9]+ migrations? found' | grep -oE '^[0-9]+' | head -1 || echo "?")
+# No `head` here: it would SIGPIPE the upstream greps and, under pipefail, turn
+# a successful parse into a failed pipeline. Trim to the first match in bash.
+FOUND=$(echo "$MIG_OUT" | grep -oE '[0-9]+ migrations? found' | grep -oE '^[0-9]+' || echo "?")
+FOUND=${FOUND%%$'\n'*}
+[[ -n "$FOUND" ]] || FOUND="?"
 if [[ "$FOUND" != "?" && "$FOUND" -lt "$MIGRATIONS_IN_REPO" ]]; then
   err "The container sees $FOUND migrations but this checkout has $MIGRATIONS_IN_REPO."
   err "That means the image is older than the code -- the build did not take effect."
