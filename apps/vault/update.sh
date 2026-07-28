@@ -77,21 +77,32 @@ trap 'err "Failed at line $LINENO (exit $?). Nothing further was attempted."; \
 
 dc() { docker compose -f "$COMPOSE_FILE" "$@"; }
 
-# Run a read-only query inside the api container via the Prisma client, which is
-# guaranteed present in that image. (Do not reach for `pg` here -- this project
-# does not depend on it, and a helper that silently fails would turn the safety
-# check below into a no-op.)
+# Run a read-only query inside the api container via the Prisma client.
+#
+# DATABASE_URL is deliberately NOT in the environment -- apps/api/scripts/
+# prisma-env.js builds it from the POSTGRES_* vars at runtime, which is why a
+# naive `new PrismaClient()` fails here with an unhelpful empty error. We
+# reconstruct it the same way and pass it explicitly.
+#
+# stderr is folded into stdout on purpose: the first version of this helper
+# swallowed it, so a failure reported "DBERR" with no cause. A diagnostic that
+# hides the diagnosis is worse than none.
 db_query() {
   dc run --rm --no-deps -T "$API_SERVICE" \
     node -e '
+      const e = process.env;
+      const pw = encodeURIComponent(e.POSTGRES_PASSWORD || "postgres");
+      const ssl = e.POSTGRES_SSL === "true" ? "?sslmode=require" : "";
+      const url = e.DATABASE_URL ||
+        `postgresql://${e.POSTGRES_USER || "postgres"}:${pw}@${e.POSTGRES_HOST || "localhost"}:${e.POSTGRES_PORT || "5432"}/${e.POSTGRES_DB || "appdb"}${ssl}`;
       const { PrismaClient } = require("@prisma/client");
-      const p = new PrismaClient();
+      const p = new PrismaClient({ datasources: { db: { url } } });
       p.$queryRawUnsafe(process.argv[1])
-        .then(rows => { console.log("QRESULT " + JSON.stringify(rows, (k, v) =>
-          typeof v === "bigint" ? Number(v) : v)); })
-        .catch(e => { console.log("DBERR " + e.message); process.exitCode = 9; })
+        .then(rows => console.log("QRESULT " + JSON.stringify(rows, (k, v) =>
+          typeof v === "bigint" ? Number(v) : v)))
+        .catch(err => { console.log("DBERR " + (err && err.message ? err.message.split("\n")[0] : String(err))); process.exitCode = 9; })
         .finally(() => p.$disconnect());
-    ' "$1" 2>/dev/null | grep -E '^(QRESULT|DBERR)' | tail -1
+    ' "$1" 2>&1 | grep -E '^(QRESULT|DBERR)' | tail -1
 }
 
 # --------------------------------------------------------------------------
@@ -153,8 +164,15 @@ log "  $SUBJECT"
 # matters, and the one the old script never looked at.
 DEPLOYED=$(dc images -q "$API_SERVICE" 2>/dev/null | head -1)
 if [[ -n "$DEPLOYED" ]]; then
+  IMG_EPOCH=$(docker image inspect "$DEPLOYED" --format '{{.Created}}' 2>/dev/null | xargs -I{} date -d {} +%s 2>/dev/null || echo 0)
+  COMMIT_EPOCH=$(git log -1 --format=%ct)
   IMG_CREATED=$(docker image inspect "$DEPLOYED" --format '{{.Created}}' 2>/dev/null | cut -dT -f1)
   log "  Running API image: ${DEPLOYED:0:12} (built $IMG_CREATED)"
+  if (( IMG_EPOCH > 0 && IMG_EPOCH < COMMIT_EPOCH )); then
+    AGE_DAYS=$(( (COMMIT_EPOCH - IMG_EPOCH) / 86400 ))
+    warn "the running image predates this commit by ~${AGE_DAYS} days -- it is serving OLD code"
+    warn "this is the condition the previous updater mistook for 'no code changes'"
+  fi
 fi
 
 MIGRATIONS_IN_REPO=$(find apps/api/prisma/migrations -mindepth 1 -maxdepth 1 -type d | wc -l)
